@@ -1,0 +1,145 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "defaultBranch": "main"
+  },
+  "files": {
+    "ignoreUnknown": false
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "tab"
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on",
+        "useSortedProperties": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": {
+          "level": "off",
+          "fix": "none"
+        },
+        "noUnusedFunctionParameters": {
+          "level": "off",
+          "fix": "none"
+        }
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "warn",
+        "useAltText": "warn"
+      },
+      "nursery": {
+        "useSortedClasses": {
+          "level": "error",
+          "fix": "safe",
+          "options": {
+            "attributes": ["class", "className"],
+            "functions": ["cn"]
+          }
+        }
+      },
+      "style": {
+        "useNamingConvention": {
+          "level": "warn",
+          "options": {
+            "conventions": [
+              {
+                "selector": { "kind": "const" },
+                "formats": ["CONSTANT_CASE", "PascalCase", "snake_case"],
+                "match": "[_a-zA-Z].*"
+              },
+              {
+                "selector": {
+                  "kind": "objectLiteralProperty"
+                },
+                "formats": ["snake_case", "PascalCase", "camelCase"]
+              },
+              {
+                "selector": {
+                  "kind": "class"
+                },
+                "formats": ["PascalCase"]
+              },
+              {
+                "selector": {
+                  "kind": "interface"
+                },
+                "formats": ["PascalCase"]
+              },
+              {
+                "selector": {
+                  "kind": "typeAlias"
+                },
+                "formats": ["PascalCase"]
+              },
+              {
+                "selector": {
+                  "kind": "enum"
+                },
+                "formats": ["PascalCase"]
+              },
+              {
+                "selector": {
+                  "kind": "function"
+                },
+                "formats": ["snake_case", "PascalCase"]
+              },
+
+              {
+                "selector": { "kind": "classMember" },
+                "formats": ["snake_case"]
+              },
+              { "selector": { "kind": "let" }, "formats": ["snake_case"] },
+              {
+                "selector": {
+                  "kind": "classMethod"
+                },
+                "formats": ["snake_case"]
+              },
+              {
+                "selector": {
+                  "kind": "variable"
+                },
+                "formats": ["snake_case"]
+              },
+              {
+                "selector": {
+                  "kind": "functionParameter"
+                },
+                "formats": ["snake_case"]
+              },
+              {
+                "selector": { "kind": "typeProperty" },
+                "formats": ["snake_case"]
+              },
+              {
+                "selector": { "kind": "typeParameter" },
+                "formats": ["PascalCase"]
+              },
+              {
+                "selector": { "kind": "classProperty" },
+                "formats": ["snake_case"]
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  }
+}

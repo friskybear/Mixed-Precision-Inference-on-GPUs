@@ -1,0 +1,56 @@
+[package]
+name = "parallel_project"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "parallel_project_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+opencl3 = { version = "0.12.1", features = [
+    "cl_khr_gl_sharing",
+    "cl_khr_dx9_media_sharing",
+    "CL_VERSION_2_1",
+    "CL_VERSION_2_2",
+    "CL_VERSION_3_0",
+    "serde",
+] }
+libc = "0.2.180"
+rand = "0.9.2"
+libloading = "0.9"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+panic = "abort"    # Higher performance by disabling panic handlers.
+strip = true       # Ensures debug symbols are removed.
+incremental = true
+
+[profile.release.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+debug = 0
+overflow-checks = false
+lto = "off"
+panic = 'abort'
+incremental = true
+codegen-units = 256

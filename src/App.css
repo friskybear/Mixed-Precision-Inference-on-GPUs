@@ -1,0 +1,401 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: false;
+  exclude: rootscrollgutter, rootcolor;
+}
+
+@layer base {
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    box-shadow: 0 0 0 1000px transparent inset !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
+}
+@utility glassy {
+  @apply border-2 border-background-200/40 bg-background-0/30 shadow-text-200/30 shadow-lg bg-clip-padding backdrop-filter backdrop-blur-[20px] transition-all duration-300 ease-in-out;
+}
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+:root[data-theme="light"] {
+  --text-0: #e8edf3;
+  --text-50: #eef2f6;
+  --text-100: #dee5ed;
+  --text-200: #bccadc;
+  --text-300: #9bb0ca;
+  --text-400: #7996b9;
+  --text-500: #587ca7;
+  --text-600: #466386;
+  --text-700: #354a64;
+  --text-800: #233143;
+  --text-900: #121921;
+  --text-950: #090c11;
+
+  --background-0: #f1f5f8;
+  --background-50: #eef3f6;
+  --background-100: #dde7ee;
+  --background-200: #bbcedd;
+  --background-300: #99b6cc;
+  --background-400: #779dbb;
+  --background-500: #5585aa;
+  --background-600: #446a88;
+  --background-700: #335066;
+  --background-800: #223544;
+  --background-900: #111b22;
+  --background-950: #090d11;
+
+  --primary-0: #2c4868;
+  --primary-50: #edf2f7;
+  --primary-100: #dbe5f0;
+  --primary-200: #b7cbe1;
+  --primary-300: #93b0d2;
+  --primary-400: #6f96c3;
+  --primary-500: #4b7cb4;
+  --primary-600: #3c6390;
+  --primary-700: #2d4a6c;
+  --primary-800: #1e3248;
+  --primary-900: #0f1924;
+  --primary-950: #080c12;
+
+  --secondary-0: #90b0d5;
+  --secondary-50: #edf2f8;
+  --secondary-100: #dae5f1;
+  --secondary-200: #b5cae3;
+  --secondary-300: #90b0d5;
+  --secondary-400: #6b96c7;
+  --secondary-500: #467cb9;
+  --secondary-600: #386394;
+  --secondary-700: #2a4a6f;
+  --secondary-800: #1c314a;
+  --secondary-900: #0e1925;
+  --secondary-950: #070c12;
+
+  --accent-0: #3a4c64;
+  --accent-50: #eff2f6;
+  --accent-100: #dfe5ec;
+  --accent-200: #becada;
+  --accent-300: #9eb0c7;
+  --accent-400: #7d95b5;
+  --accent-500: #5d7ba2;
+  --accent-600: #4a6282;
+  --accent-700: #384a61;
+  --accent-800: #253141;
+  --accent-900: #131920;
+  --accent-950: #090c10;
+}
+:root[data-theme="dark"] {
+  --text-0: #0c1117;
+  --text-50: #090c11;
+  --text-100: #121921;
+  --text-200: #233143;
+  --text-300: #354a64;
+  --text-400: #466386;
+  --text-500: #587ca7;
+  --text-600: #7996b9;
+  --text-700: #9bb0ca;
+  --text-800: #bccadc;
+  --text-900: #dee5ed;
+  --text-950: #eef2f6;
+
+  --background-0: #070b0e;
+  --background-50: #090d11;
+  --background-100: #111b22;
+  --background-200: #223544;
+  --background-300: #335066;
+  --background-400: #446a88;
+  --background-500: #5585aa;
+  --background-600: #779dbb;
+  --background-700: #99b6cc;
+  --background-800: #bbcedd;
+  --background-900: #dde7ee;
+  --background-950: #eef3f6;
+
+  --primary-0: #97b3d3;
+  --primary-50: #080c12;
+  --primary-100: #0f1924;
+  --primary-200: #1e3248;
+  --primary-300: #2d4a6c;
+  --primary-400: #3c6390;
+  --primary-500: #4b7cb4;
+  --primary-600: #6f96c3;
+  --primary-700: #93b0d2;
+  --primary-800: #b7cbe1;
+  --primary-900: #dbe5f0;
+  --primary-950: #edf2f7;
+
+  --secondary-0: #2a4a6f;
+  --secondary-50: #070c12;
+  --secondary-100: #0e1925;
+  --secondary-200: #1c314a;
+  --secondary-300: #2a4a6f;
+  --secondary-400: #386394;
+  --secondary-500: #467cb9;
+  --secondary-600: #6b96c7;
+  --secondary-700: #90b0d5;
+  --secondary-800: #b5cae3;
+  --secondary-900: #dae5f1;
+  --secondary-950: #edf2f8;
+
+  --accent-0: #9badc5;
+  --accent-50: #090c10;
+  --accent-100: #131920;
+  --accent-200: #253141;
+  --accent-300: #384a61;
+  --accent-400: #4a6282;
+  --accent-500: #5d7ba2;
+  --accent-600: #7d95b5;
+  --accent-700: #9eb0c7;
+  --accent-800: #becada;
+  --accent-900: #dfe5ec;
+  --accent-950: #eff2f6;
+}
+
+@theme {
+  --color-info: #74afe7;
+  --color-info-content: oklch(37% 0.146 265.522);
+  --color-success: #99b044;
+  --color-success-content: oklch(27% 0.046 192.524);
+  --color-warning: #d89e5f;
+  --color-warning-content: oklch(27% 0.077 45.635);
+  --color-error: #cc6159;
+  --color-error-content: oklch(19% 0.2 26.042);
+  --color-neutral: oklch(27% 0.033 256.848);
+  --color-neutral-content: #dee5ed;
+  --color-base-100: #f1f5f8;
+  --color-base-200: #eef3f6;
+  --color-base-300: #dde7ee;
+  --font-roboto: "Roboto", sans-serif;
+  --font-fa: "Vazirmatn", sans-serif;
+  --font-fa-nastaliq: "Noto Nastaliq Urdu", sans-serif;
+  --font-en-nastaliq: "Cormorant", sans-serif;
+  --font-fancy-fa: "Reem Kufi", sans-serif;
+  --font-fancy-en: "Knewave", sans-serif;
+}
+
+@theme inline {
+  --color-text-0: var(--text-0);
+  --color-text-50: var(--text-50);
+  --color-text-100: var(--text-100);
+  --color-text-200: var(--text-200);
+  --color-text-300: var(--text-300);
+  --color-text-400: var(--text-400);
+  --color-text-500: var(--text-500);
+  --color-text-600: var(--text-600);
+  --color-text-700: var(--text-700);
+  --color-text-800: var(--text-800);
+  --color-text-900: var(--text-900);
+  --color-text-950: var(--text-950);
+
+  --color-background-0: var(--background-0);
+  --color-background-50: var(--background-50);
+  --color-background-100: var(--background-100);
+  --color-background-200: var(--background-200);
+  --color-background-300: var(--background-300);
+  --color-background-400: var(--background-400);
+  --color-background-500: var(--background-500);
+  --color-background-600: var(--background-600);
+  --color-background-700: var(--background-700);
+  --color-background-800: var(--background-800);
+  --color-background-900: var(--background-900);
+  --color-background-950: var(--background-950);
+
+  --color-primary-0: var(--primary-0);
+  --color-primary-50: var(--primary-50);
+  --color-primary-100: var(--primary-100);
+  --color-primary-200: var(--primary-200);
+  --color-primary-300: var(--primary-300);
+  --color-primary-400: var(--primary-400);
+  --color-primary-500: var(--primary-500);
+  --color-primary-600: var(--primary-600);
+  --color-primary-700: var(--primary-700);
+  --color-primary-800: var(--primary-800);
+  --color-primary-900: var(--primary-900);
+  --color-primary-950: var(--primary-950);
+
+  --color-secondary-0: var(--secondary-0);
+  --color-secondary-50: var(--secondary-50);
+  --color-secondary-100: var(--secondary-100);
+  --color-secondary-200: var(--secondary-200);
+  --color-secondary-300: var(--secondary-300);
+  --color-secondary-400: var(--secondary-400);
+  --color-secondary-500: var(--secondary-500);
+  --color-secondary-600: var(--secondary-600);
+  --color-secondary-700: var(--secondary-700);
+  --color-secondary-800: var(--secondary-800);
+  --color-secondary-900: var(--secondary-900);
+  --color-secondary-950: var(--secondary-950);
+
+  --color-accent-0: var(--accent-0);
+  --color-accent-50: var(--accent-50);
+  --color-accent-100: var(--accent-100);
+  --color-accent-200: var(--accent-200);
+  --color-accent-300: var(--accent-300);
+  --color-accent-400: var(--accent-400);
+  --color-accent-500: var(--accent-500);
+  --color-accent-600: var(--accent-600);
+  --color-accent-700: var(--accent-700);
+  --color-accent-800: var(--accent-800);
+  --color-accent-900: var(--accent-900);
+  --color-accent-950: var(--accent-950);
+}
+
+@plugin "daisyui/theme" {
+  name: "light";
+  default: true;
+  color-scheme: "light";
+  --color-base-100: #f1f5f8;
+  --color-base-200: #eef3f6;
+  --color-base-300: #dde7ee;
+  --color-base-content: #0c1117;
+  --color-primary: #2c4868;
+  --color-primary-content: #dee5ed;
+  --color-secondary: #90b0d5;
+  --color-secondary-content: #0c1117;
+  --color-accent: #3a4c64;
+  --color-accent-content: #dee5ed;
+  --color-neutral: oklch(27% 0.033 256.848);
+  --color-neutral-content: #dee5ed;
+  --color-info: #74afe7;
+  --color-info-content: oklch(37% 0.146 265.522);
+  --color-success: #99b044;
+  --color-success-content: oklch(27% 0.046 192.524);
+  --color-warning: #d89e5f;
+  --color-warning-content: oklch(27% 0.077 45.635);
+  --color-error: #cc6159;
+  --color-error-content: oklch(19% 0.2 26.042);
+  --radius-selector: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.25rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.28125rem;
+  --border: 0.5px;
+  --depth: 0;
+  --noise: 1;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  default: false;
+  color-scheme: "dark";
+  --color-base-100: #070b0e;
+  --color-base-200: #090d11;
+  --color-base-300: #111b22;
+  --color-base-content: #e8edf3;
+  --color-primary: #97b3d3;
+  --color-primary-content: #090c11;
+  --color-secondary: #2a4a6f;
+  --color-secondary-content: #bccadc;
+  --color-accent: #9badc5;
+  --color-accent-content: #090c11;
+  --color-neutral: oklch(27% 0.033 256.848);
+  --color-neutral-content: #dee5ed;
+  --color-info: #74afe7;
+  --color-info-content: oklch(37% 0.146 265.522);
+  --color-success: #99b044;
+  --color-success-content: oklch(27% 0.046 192.524);
+  --color-warning: #d89e5f;
+  --color-warning-content: oklch(27% 0.077 45.635);
+  --color-error: #cc6159;
+  --color-error-content: oklch(19% 0.2 26.042);
+  --radius-selector: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.25rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.28125rem;
+  --border: 0.5px;
+  --depth: 0;
+  --noise: 1;
+}
+
+* {
+  min-width: 0px;
+  scrollbar-width: none;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: optimize-contrast;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+input::-ms-reveal {
+  opacity: 0;
+  display: block;
+}
+@layer base {
+  :root {
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+  }
+}
+
+.noiseBackground {
+  /*background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' version='1.1' xmlns:xlink='http://www.w3.org/1999/xlink' xmlns:svgjs='http://svgjs.dev/svgjs' viewBox='0 0 700 700' width='700' height='700' opacity='0.27'%3E%3Cdefs%3E%3Cfilter id='noise-filter-2323' x='-20%25' y='-20%25' width='140%25' height='140%25' filterUnits='objectBoundingBox' primitiveUnits='userSpaceOnUse' color-interpolation-filters='linearRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.6' numOctaves='4' seed='15' stitchTiles='stitch' x='0%25' y='0%25' width='100%25' height='100%25' result='turbulence'%3E%3C/feTurbulence%3E%3CfeSpecularLighting surfaceScale='13' specularConstant='1' specularExponent='23' lighting-color='%23afa3cf' x='0%25' y='0%25' width='100%25' height='100%25' in='turbulence' result='specularLighting'%3E%3CfeDistantLight azimuth='3' elevation='125'%3E%3C/feDistantLight%3E%3C/feSpecularLighting%3E%3C/filter%3E%3C/defs%3E%3Crect width='700' height='700' fill='transparent'%3E%3C/rect%3E%3Crect width='700' height='700' fill='%23afa3bf' filter='url(%23noise-filter-2323)'%3E%3C/rect%3E%3C/svg%3E");*/
+  background-image: url("/noiseBackground.png");
+  background-size: 300px 300px;
+}
+/*.bg_noise_black {
+  background: radial-gradient(
+    circle at top center,
+    var(--color-background-300) 0%,
+    var(--color-background-200) 33%,
+    var(--color-background-100) 66%,
+    var(--color-background-50) 100%
+  );
+
+  position: relative;
+}
+.bg_noise_white {
+  background: radial-gradient(
+    circle at top center,
+    var(--color-background-0) 0%,
+    var(--color-background-50) 33%,
+    var(--color-background-100) 66%,
+    var(--color-background-200) 100%
+  );
+  position: relative;
+}*/
+
+.bg_noise_black::before {
+  /*content: "";
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: multiply;
+  background-repeat: repeat;
+  opacity: 0.5;
+  pointer-events: none;
+  background-image: url("/bg_noise_black.png");
+  background-size: 300px 300px;*/
+  /*background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 700 700' opacity='0.90'%3E%3Cdefs%3E%3Cfilter id='noise-filter-1223' x='-20%25' y='-20%25' width='140%25' height='140%25'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.11' numOctaves='4' seed='35' stitchTiles='stitch' result='turbulence'%3E%3C/feTurbulence%3E%3CfeSpecularLighting surfaceScale='200' specularConstant='3' specularExponent='25' lighting-color='%23ffffff' in='turbulence' result='specularLighting'%3E%3CfeDistantLight azimuth='314' elevation='200'%3E%3C/feDistantLight%3E%3C/feSpecularLighting%3E%3C/filter%3E%3C/defs%3E%3Crect width='700' height='700' fill='%23000000'%3E%3C/rect%3E%3Crect width='700' height='700' fill='%23ffffff' filter='url(%23noise-filter-1223)'%3E%3C/rect%3E%3C/svg%3E%0A");*/
+}
+.bg_noise_white::before {
+  /*content: "";
+  position: absolute;
+  inset: 0;
+  min-height: 100%;
+  mix-blend-mode: multiply;
+  background-repeat: repeat;
+  opacity: 0.8;
+  pointer-events: none;
+  background-image: url("/bg_noise_white.png");
+  background-size: 300px 300px;*/
+  /*background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 700 700' opacity='0.1'%3E%3Cdefs%3E%3Cfilter id='noise-filter-2123' x='-20%25' y='-20%25' width='140%25' height='140%25'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.05' numOctaves='4' seed='15' stitchTiles='stitch' result='turbulence'%3E%3C/feTurbulence%3E%3CfeSpecularLighting surfaceScale='40' specularConstant='3' specularExponent='20' lighting-color='%23ffffff' in='turbulence' result='specularLighting'%3E%3CfeDistantLight azimuth='314' elevation='140'%3E%3C/feDistantLight%3E%3C/feSpecularLighting%3E%3C/filter%3E%3C/defs%3E%3Crect width='700' height='700' fill='%23000000'%3E%3C/rect%3E%3Crect width='700' height='700' fill='%23ffffff' filter='url(%23noise-filter-2123)'%3E%3C/rect%3E%3C/svg%3E%0A");*/
+}
+.circleNoise {
+  --lines: 0.0003px;
+
+  mask: repeating-radial-gradient(
+    circle at center,
+    #000,
+    var(--lines),
+    #000,
+    0,
+    /* transition hints make code easier to manage */ #0000,
+    calc(var(--lines) * 2),
+    #0000 0 /* trailing 0 is part of the hard stop logic */
+  );
+}
+
