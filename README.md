@@ -10,7 +10,7 @@ A high-performance GPU computing project comparing 6 different inference modes u
 2. **FP16** - Half-precision (16-bit) using OpenCL kernels  
 3. **FP16 + Row-Wise Scaling** - FP16 with per-row normalization for stability
 4. **CLBlast FP32** - BLAS SGEMM (optimized matrix multiplication)
-5. **CLBlast FP16** - BLAS HGEMM (half-precision BLAS)
+5. **CLBlast FP16** - BLAS HGEMM (half-precision BLAS) 
 6. **CLBlast Mixed** - FP16 storage with FP32 SGEMM compute
 
 ### Real-Time Visualization
