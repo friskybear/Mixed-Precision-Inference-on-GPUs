@@ -782,7 +782,7 @@ impl MLPInference {
             let mut weights2_buf_mut = weights2_buf;
             let mut bias2_buf_mut = bias2_buf;
             let mut output_buf_mut = output_buf;
-            let mut hidden_buf_mut = hidden_buf;
+            let hidden_buf_mut = hidden_buf;
 
             self.queue
                 .enqueue_write_buffer(&mut input_buf_mut, CL_BLOCKING, 0, input_data, &[])
@@ -1021,7 +1021,7 @@ impl MLPInference {
             let mut weights2_buf_mut = weights2_buf;
             let mut bias2_buf_mut = bias2_buf;
             let mut output_buf_mut = output_buf;
-            let mut hidden_buf_mut = hidden_buf;
+            let hidden_buf_mut = hidden_buf;
 
             self.queue
                 .enqueue_write_buffer(&mut input_buf_mut, CL_BLOCKING, 0, &input_data, &[])
@@ -1323,7 +1323,7 @@ impl MLPInference {
             let mut scales2_buf_mut = scales2_buf;
             let mut bias2_buf_mut = bias2_buf;
             let mut output_buf_mut = output_buf;
-            let mut hidden_buf_mut = hidden_buf;
+            let hidden_buf_mut = hidden_buf;
 
             self.queue
                 .enqueue_write_buffer(&mut input_buf_mut, CL_BLOCKING, 0, &input_data, &[])
@@ -1581,7 +1581,7 @@ impl MLPInference {
             let mut bias1_buf = bias1_buf;
             let mut weights2_buf = weights2_buf;
             let mut bias2_buf = bias2_buf;
-            let mut hidden_buf = hidden_buf;
+            let hidden_buf = hidden_buf;
             let mut output_buf = output_buf;
 
             self.queue
@@ -1861,7 +1861,7 @@ impl MLPInference {
             let mut bias1_buf = bias1_buf;
             let mut weights2_buf = weights2_buf;
             let mut bias2_buf = bias2_buf;
-            let mut hidden_buf = hidden_buf;
+            let hidden_buf = hidden_buf;
             let mut output_buf = output_buf;
 
             self.queue
@@ -2174,12 +2174,12 @@ impl MLPInference {
             let mut input_fp16_buf = input_fp16_buf;
             let mut weights1_fp16_buf = weights1_fp16_buf;
             let mut weights2_fp16_buf = weights2_fp16_buf;
-            let mut input_f32_buf = input_f32_buf;
-            let mut weights1_f32_buf = weights1_f32_buf;
-            let mut weights2_f32_buf = weights2_f32_buf;
+            let input_f32_buf = input_f32_buf;
+            let weights1_f32_buf = weights1_f32_buf;
+            let weights2_f32_buf = weights2_f32_buf;
             let mut bias1_buf = bias1_buf;
             let mut bias2_buf = bias2_buf;
-            let mut hidden_buf = hidden_buf;
+            let hidden_buf = hidden_buf;
             let mut output_buf = output_buf;
 
             // Write FP16 data
