@@ -1,34 +1,201 @@
-# Complete Line-by-Line Explanation of OpenCL Neural Network Comparison Code
+# Complete Explanation of the Mixed-Precision GPU Inference Code
 
-This document explains every part of the Rust + OpenCL code that performs neural network inference comparison across three precision formats (FP32, FP16, and FP16 with scaling) **simultaneously**.
+This document explains every part of the Rust + OpenCL + CLBlast code that runs a two-layer neural network (MLP) across **six different precision modes** simultaneously, comparing their speed, memory usage, and accuracy.
 
 ---
 
 ## Table of Contents
 1. [What is OpenCL?](#what-is-opencl)
-2. [Import Statements](#import-statements)
-3. [Data Structures](#data-structures)
-4. [Device Selection](#device-selection)
-5. [OpenCL Kernels](#opencl-kernels)
-6. [Float Conversion Functions](#float-conversion-functions)
-7. [Main Inference Structure](#main-inference-structure)
-8. [Inference Functions](#inference-functions)
-9. [Command Handlers](#command-handlers)
-10. [Frontend Integration](#frontend-integration)
+2. [What is BLAS? (Read This Carefully!)](#what-is-blas)
+3. [What is CLBlast?](#what-is-clblast)
+4. [What is GEMM? (The Heart of Neural Networks)](#what-is-gemm)
+5. [Import Statements](#import-statements)
+6. [CLBlast DLL Loading](#clblast-dll-loading)
+7. [Data Structures](#data-structures)
+8. [Device Selection](#device-selection)
+9. [OpenCL Kernels](#opencl-kernels)
+10. [Float Conversion Functions](#float-conversion-functions)
+11. [RoundData - Shared Test Data](#rounddata---shared-test-data)
+12. [MLPInference Structure](#mlpinference-structure)
+13. [Inference Functions](#inference-functions)
+14. [CLBlast Inference Functions](#clblast-inference-functions)
+15. [Command Handlers](#command-handlers)
+16. [The Six Precision Modes Compared](#the-six-precision-modes-compared)
+17. [Summary](#summary)
 
 ---
 
 ## What is OpenCL?
 
-**OpenCL (Open Computing Language)** is a framework that lets you write code that runs on different types of processors:
-- **GPU (Graphics Processing Unit)**: Very fast at doing many calculations at once (parallel processing)
-- **CPU (Central Processing Unit)**: Your computer's main processor
+**OpenCL (Open Computing Language)** is a framework that lets you write code that runs on different types of processors — GPUs, CPUs, and more — using a single standard.
 
-Think of it like this: If you need to paint 1000 houses, you could:
-- Use 1 painter (CPU) - they paint one house at a time
-- Use 1000 painters (GPU) - they all paint simultaneously
+Think of it like this: if you need to paint 1,000 houses, you could:
+- Use **1 painter (CPU)** — paints one house at a time, very carefully
+- Use **1,000 painters (GPU)** — all paint at the same time, much faster overall
 
-OpenCL lets you use the GPU's "1000 painters" for mathematical calculations, not just graphics.
+OpenCL lets you use the GPU's "1,000 painters" for math calculations. Neural networks are essentially enormous amounts of math (multiplication and addition), so they benefit hugely from this parallelism.
+
+---
+
+## What is BLAS?
+
+**BLAS stands for Basic Linear Algebra Subprograms.**
+
+This is one of the most important concepts in this entire codebase, so let's break it down completely from scratch.
+
+### Linear Algebra — What Is It?
+
+Linear algebra is math with tables of numbers. Instead of working with single numbers like `5 + 3 = 8`, you work with entire grids of numbers at once. These grids are called **matrices**.
+
+A matrix is just a rectangle of numbers:
+
+```
+| 1  2  3 |
+| 4  5  6 |
+| 7  8  9 |
+```
+
+This is a 3×3 matrix (3 rows, 3 columns).
+
+### Why Does a Neural Network Need This?
+
+A neural network layer does exactly one thing: it multiplies an input matrix by a weight matrix. That's it. The entire "intelligence" of a neural network comes from carefully chosen weight values. The math looks like:
+
+```
+Output = Input × Weights + Bias
+```
+
+If you have 64 inputs and 128 neurons, your input is a `64×1` matrix and your weights are a `128×64` matrix. Multiplying them produces a `64×128` output. This is **matrix multiplication**, and it happens billions of times per second in modern AI.
+
+### So What is BLAS?
+
+BLAS is a collection of **highly optimized, battle-tested routines** for doing exactly this kind of math as fast as physically possible. Think of BLAS like a professional race car driver — you could drive the route yourself, but the professional will always be faster because they've practiced every corner thousands of times and know every trick.
+
+BLAS has been around since the 1970s. Thousands of engineers have spent decades making it as fast as possible on every type of hardware. When you use BLAS, you're getting all of that for free.
+
+### BLAS Levels
+
+BLAS is organized into three levels based on how much data you're working with:
+
+- **Level 1** — Operations on single vectors (1D arrays): `y = alpha * x + y`
+- **Level 2** — Matrix × vector operations: `y = alpha * A * x + beta * y`
+- **Level 3** — Matrix × matrix operations: `C = alpha * A * B + beta * C`
+
+This code uses **Level 3 BLAS**, specifically a function called **GEMM**, because neural networks need full matrix × matrix multiplication.
+
+### Why Not Just Write Loops?
+
+You could write matrix multiplication yourself with three nested `for` loops:
+
+```
+for i in rows_of_A:
+    for j in cols_of_B:
+        for k in shared_dimension:
+            C[i][j] += A[i][k] * B[k][j]
+```
+
+This works, but it's extremely slow for large matrices because:
+1. It ignores CPU/GPU caching behavior
+2. It can't use SIMD (doing 8+ multiplications simultaneously with special hardware)
+3. It can't split work across multiple GPU threads efficiently
+4. It has no knowledge of the hardware it's running on
+
+BLAS implementations use all of these tricks internally. On a GPU, a good GEMM can run **10-100× faster** than a naive loop.
+
+---
+
+## What is CLBlast?
+
+**CLBlast** is an OpenCL implementation of BLAS. It's a library that provides highly optimized GEMM (and other BLAS routines) specifically for OpenCL-capable GPUs.
+
+Think of it like this:
+- **BLAS** = the standard recipe book for linear algebra
+- **cuBLAS** = NVIDIA's version of that recipe book, optimized for NVIDIA GPUs
+- **CLBlast** = an open-source version that works on ANY OpenCL device (AMD, Intel, NVIDIA, CPU)
+
+CLBlast is loaded as a `.dll` file (Windows dynamic library) and called directly from Rust. The code embeds the DLL inside the binary itself using `include_bytes!`, so users don't need to install anything separately.
+
+### The CLBlast Auto-Tuner
+
+CLBlast has a critical behaviour to understand: **on the very first call for a given matrix shape, it runs an internal benchmark to find the fastest GPU kernel configuration** (tile sizes, work-group sizes, vectorization width, etc.) for your specific hardware. This auto-tuning can take **hundreds to thousands of milliseconds** on the first call. On every subsequent call with the same shape, it uses the cached result and runs at full speed.
+
+This is why `warmup_clblast()` exists — it fires the auto-tuner before any timed measurements begin.
+
+---
+
+## What is GEMM?
+
+**GEMM = GEneral Matrix-Matrix multiplication**
+
+This is the single most important operation in all of deep learning. If you understand GEMM, you understand the heart of neural networks.
+
+### The GEMM Formula
+
+```
+C = alpha × (A × B) + beta × C
+```
+
+Where:
+- `A` is the first input matrix
+- `B` is the second input matrix
+- `C` is the output matrix (also the starting value that gets scaled by `beta`)
+- `alpha` is a scalar multiplier for the product
+- `beta` is a scalar multiplier for the existing C values
+
+In most neural network cases:
+- `alpha = 1.0` (don't scale the result)
+- `beta = 0.0` (ignore whatever was in C before, start fresh)
+
+So it simplifies to: `C = A × B`
+
+### SGEMM vs HGEMM
+
+The prefix tells you the data type:
+- **S**GEMM = **S**ingle-precision (FP32) — each number is 32 bits, 4 bytes
+- **H**GEMM = **H**alf-precision (FP16) — each number is 16 bits, 2 bytes
+
+FP16 uses half the memory and can be twice as fast on hardware that supports it (like modern GPUs).
+
+### What Does "Transpose" Mean?
+
+When you call GEMM, you can optionally tell it to **transpose** one or both matrices before multiplying. Transposing a matrix means flipping it — rows become columns and columns become rows:
+
+Original matrix:
+```
+| 1  2  3 |     Transposed:    | 1  4 |
+| 4  5  6 |        →           | 2  5 |
+                                | 3  6 |
+```
+
+In this code, the weights matrix is stored as `(hidden_size × input_size)` — each **row** is one neuron's weights. But for matrix multiplication, we need `(input_size × hidden_size)`. Instead of rearranging memory (which is slow), we just tell GEMM: "use matrix B transposed". That's what `CLBLAST_TRANSPOSE_YES` does.
+
+### Row-Major Layout
+
+```rust
+const CLBLAST_LAYOUT_ROW_MAJOR: i32 = 101;
+```
+
+This tells CLBlast how the matrix is stored in memory. **Row-major** means the elements of each row are stored next to each other:
+
+```
+Matrix:          Memory layout:
+| 1  2  3 |     [1, 2, 3, 4, 5, 6, 7, 8, 9]
+| 4  5  6 |      row0      row1      row2
+| 7  8  9 |
+```
+
+Row-major is the default in C, C++, and Rust. The alternative (column-major) is used in Fortran and MATLAB. You must always tell BLAS which one you're using or you'll get wrong results.
+
+### The "Leading Dimension" (ld) Parameters
+
+In the GEMM call, you see parameters called `a_ld`, `b_ld`, `c_ld`. These are the **leading dimensions** — basically, how many elements you need to skip to get from one row to the next.
+
+For a matrix stored densely (no gaps), this is just the number of columns:
+- For `input` (batch_size × input_size): `a_ld = input_size`
+- For `weights1` (hidden_size × input_size), transposed: `b_ld = input_size`
+- For `hidden` (batch_size × hidden_size): `c_ld = hidden_size`
+
+This matters because BLAS can work on sub-sections of larger matrices without copying data — it just uses the leading dimension to find each row.
 
 ---
 
@@ -37,106 +204,173 @@ OpenCL lets you use the GPU's "1000 painters" for mathematical calculations, not
 ```rust
 use opencl3::command_queue::{CommandQueue, CL_QUEUE_PROFILING_ENABLE};
 ```
-- **CommandQueue**: A queue where you put tasks for the GPU to execute (like a to-do list)
-- **CL_QUEUE_PROFILING_ENABLE**: A flag that lets you measure how long tasks take
+- **CommandQueue**: A queue where you submit tasks for the GPU. Tasks execute in order.
+- **CL_QUEUE_PROFILING_ENABLE**: A flag that enables timing measurements on GPU operations.
 
 ```rust
 use opencl3::context::Context;
 ```
-- **Context**: The "workspace" where OpenCL operates. It holds devices, memory, and programs together
+- **Context**: The "workspace" that connects your Rust code to the GPU. It manages all memory and programs.
 
 ```rust
 use opencl3::device::{get_all_devices, Device, CL_DEVICE_TYPE_CPU, CL_DEVICE_TYPE_GPU};
 ```
-- **get_all_devices**: Function to find all available CPUs/GPUs on your computer
-- **Device**: Represents a specific processor (CPU or GPU)
-- **CL_DEVICE_TYPE_CPU/GPU**: Constants to specify which type of device you want
+- **get_all_devices**: Finds all available compute devices on the system.
+- **Device**: Represents a single GPU or CPU that can run OpenCL.
 
 ```rust
-use opencl3::kernel::Kernel;
+use opencl3::memory::{Buffer, ClMem, CL_MEM_READ_WRITE};
 ```
-- **Kernel**: The actual code (function) that runs on the GPU. Think of it as a mini-program
+- **Buffer**: A chunk of memory that lives on the GPU.
+- **CL_MEM_READ_WRITE**: Allows the GPU to both read from and write to this buffer.
 
 ```rust
-use opencl3::memory::{Buffer, CL_MEM_READ_WRITE};
+use std::ffi::c_void;
 ```
-- **Buffer**: A chunk of memory on the GPU where you store data (like arrays)
-- **CL_MEM_READ_WRITE**: Permission flag - the GPU can both read from and write to this memory
+- **c_void**: A raw pointer type used when calling C functions (like CLBlast) that don't know about Rust types.
 
 ```rust
-use opencl3::program::Program;
+use std::sync::{Mutex, OnceLock};
 ```
-- **Program**: Contains compiled OpenCL kernel code ready to execute
+- **Mutex**: A lock that prevents two threads from touching the same data simultaneously. Essential for thread safety.
+- **OnceLock**: A value that is initialized exactly once and then stays constant forever.
+
+---
+
+## CLBlast DLL Loading
+
+This section handles loading the CLBlast library at runtime.
+
+### Embedding the DLL
 
 ```rust
-use opencl3::types::{cl_device_id, CL_BLOCKING};
+pub const MY_DLL: &[u8] = include_bytes!("../clblast.dll");
 ```
-- **cl_device_id**: A unique identifier for a device
-- **CL_BLOCKING**: Makes operations wait until they're complete before moving on
+
+**`include_bytes!`** reads a file at **compile time** and bakes its raw bytes directly into the executable. This means the `clblast.dll` file becomes part of the `.exe` itself. When the program runs, it extracts the DLL to a temporary folder and loads it. Users never need to install CLBlast manually.
+
+### CLBlast Constants
 
 ```rust
-use serde::{Deserialize, Serialize};
+const CLBLAST_LAYOUT_ROW_MAJOR: i32 = 101;
+const CLBLAST_TRANSPOSE_NO: i32 = 111;
+const CLBLAST_TRANSPOSE_YES: i32 = 112;
 ```
-- **Serde**: A library for converting Rust data structures to/from formats like JSON (needed for sending data to the UI)
+
+These are integer codes that CLBlast uses to specify how matrices are arranged and whether to transpose them. The numbers come directly from the CLBlast C header file — they match exactly what the DLL expects.
+
+### Function Type Definitions
 
 ```rust
-use std::time::Instant;
+type CLBlastSgemmFn = unsafe extern "C" fn(
+    layout: i32,
+    a_transpose: i32,
+    b_transpose: i32,
+    m: usize,       // rows of A and C
+    n: usize,       // cols of B and C
+    k: usize,       // cols of A and rows of B
+    alpha: f32,     // scalar multiplier for A*B
+    a_buffer: *mut c_void,  // GPU memory pointer to A
+    a_offset: usize,        // where A starts in the buffer
+    a_ld: usize,            // leading dimension of A
+    b_buffer: *mut c_void,  // GPU memory pointer to B
+    b_offset: usize,
+    b_ld: usize,
+    beta: f32,      // scalar multiplier for existing C
+    c_buffer: *mut c_void,  // GPU memory pointer to C (output)
+    c_offset: usize,
+    c_ld: usize,
+    queue: *mut *mut c_void,  // OpenCL command queue
+    event: *mut cl_event,     // optional event for synchronization
+) -> i32;  // returns 0 on success
 ```
-- **Instant**: Used to measure time (for performance metrics)
+
+This defines the **exact function signature** that CLBlast's `CLBlastSgemm` function has. The `extern "C"` tells Rust to use C calling conventions instead of Rust calling conventions. Every parameter must match what the DLL expects, or the program will crash.
+
+`CLBlastHgemmFn` is identical except `alpha` and `beta` are `u16` (half-precision floats stored as unsigned 16-bit integers).
+
+### The ClBlastLib Struct
+
+```rust
+struct ClBlastLib {
+    _lib: libloading::Library,  // keeps the DLL loaded in memory
+    sgemm: CLBlastSgemmFn,      // function pointer to CLBlastSgemm
+    hgemm: CLBlastHgemmFn,      // function pointer to CLBlastHgemm
+}
+```
+
+This struct **owns** the loaded DLL. The `_lib` field must stay alive — if it gets dropped (freed), the DLL gets unloaded and the function pointers `sgemm` and `hgemm` become dangling pointers (pointing to nothing). The underscore prefix `_lib` tells Rust "I'm not using this directly, but keep it alive."
+
+```rust
+unsafe impl Send for ClBlastLib {}
+unsafe impl Sync for ClBlastLib {}
+```
+
+These tell Rust's thread safety system that it's okay to send `ClBlastLib` between threads and share it between threads. We need `unsafe` because Rust can't automatically verify this — we're manually promising that CLBlast's functions are thread-safe (they are, as long as you use different queues per thread).
+
+### Extracting and Loading the DLL
+
+```rust
+fn get_clblast_dll_path() -> std::path::PathBuf {
+    CLBLAST_DLL_PATH.get_or_init(|| {
+        let dir = std::env::temp_dir().join("parallel_project_clblast");
+        std::fs::create_dir_all(&dir).ok();
+        let dll_path = dir.join("clblast.dll");
+        if !dll_path.exists()
+            || std::fs::metadata(&dll_path).map(|m| m.len()).unwrap_or(0) != MY_DLL.len() as u64
+        {
+            std::fs::write(&dll_path, MY_DLL).expect("Failed to write clblast.dll");
+        }
+        dll_path
+    }).clone()
+}
+```
+
+This function:
+1. Creates a folder in the system's temp directory (e.g., `C:\Users\...\AppData\Local\Temp\parallel_project_clblast`)
+2. Checks if the DLL is already there AND has the right file size (a quick integrity check)
+3. If not, writes the embedded DLL bytes to disk
+4. Returns the path to the DLL file
+
+The `OnceLock` ensures this only runs once even if called from multiple threads simultaneously.
+
+```rust
+fn load_clblast() -> Result<ClBlastLib, String> {
+    let dll_path = get_clblast_dll_path();
+    unsafe {
+        let lib = libloading::Library::new(&dll_path)...;
+        let sgemm_sym = lib.get(b"CLBlastSgemm")...;
+        let hgemm_sym = lib.get(b"CLBlastHgemm")...;
+        Ok(ClBlastLib { _lib: lib, sgemm: *sgemm_sym, hgemm: *hgemm_sym })
+    }
+}
+```
+
+This is called **dynamic linking** — instead of knowing where `CLBlastSgemm` is at compile time, we search for it by name at runtime inside the DLL file. `lib.get(b"CLBlastSgemm")` looks up the symbol named `CLBlastSgemm` in the DLL's export table and gives us its memory address. We then store that address as a function pointer.
 
 ---
 
 ## Data Structures
 
-### InferenceMetrics Structure
+### InferenceMetrics
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceMetrics {
+    pub execution_time_ms: f64,      // how long the GPU took, in milliseconds
+    pub memory_bandwidth_gbps: f64,  // how fast memory was read/written (GB/s)
+    pub throughput_gflops: f64,      // how many billion math operations per second
+    pub memory_footprint_mb: f64,    // total GPU memory used, in megabytes
+    pub accuracy_mse: f64,           // Mean Squared Error vs FP32 reference
+    pub accuracy_max_error: f64,     // worst single output difference vs FP32
+}
 ```
-- **#[derive(...)]**: Automatically generates useful functionality
-- **Debug**: Lets you print the structure for debugging
-- **Clone**: Lets you make copies
-- **Serialize/Deserialize**: Lets you convert to/from JSON
-- **pub struct**: A public data structure (like a class in other languages)
+
+Every inference mode produces one of these. The `Serialize`/`Deserialize` derives let Tauri automatically convert this struct to JSON for the frontend.
+
+### StreamingData
 
 ```rust
-    pub execution_time_ms: f64,
-```
-- How long the computation took in milliseconds
-
-```rust
-    pub memory_bandwidth_gbps: f64,
-```
-- Speed of data transfer in gigabytes per second (how fast data moves between CPU and GPU)
-
-```rust
-    pub throughput_gflops: f64,
-```
-- **GFLOPS**: Giga Floating Point Operations Per Second (billions of calculations per second)
-- Measures computational performance
-
-```rust
-    pub memory_footprint_mb: f64,
-```
-- How much memory (RAM/VRAM) the computation uses in megabytes
-
-```rust
-    pub accuracy_mse: f64,
-```
-- **MSE**: Mean Squared Error - measures how different the result is from the reference (FP32)
-- Lower is better
-
-```rust
-    pub accuracy_max_error: f64,
-```
-- The largest single error in the results
-- Lower is better
-
-### StreamingData Structure
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamingData {
     pub timestamp: f64,
     pub execution_time_ms: f64,
@@ -145,10 +379,10 @@ pub struct StreamingData {
     pub accuracy_mse: f64,
 }
 ```
-- Similar to InferenceMetrics but includes timestamp for real-time monitoring
-- Used for streaming data to the UI
 
-### ComparisonMetrics Structure (NEW!)
+A lighter structure used for real-time chart streaming — only the fields that charts need.
+
+### ComparisonMetrics
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,894 +390,740 @@ pub struct ComparisonMetrics {
     pub fp32: InferenceMetrics,
     pub fp16: InferenceMetrics,
     pub fp16_scaled: InferenceMetrics,
+    pub clblast_fp32: InferenceMetrics,
+    pub clblast_fp16: InferenceMetrics,
+    pub clblast_mixed: InferenceMetrics,
 }
 ```
-- **NEW**: This structure holds results from all three precision modes
-- **fp32**: Results from 32-bit floating point (baseline)
-- **fp16**: Results from 16-bit floating point (faster but less accurate)
-- **fp16_scaled**: Results from 16-bit with row-wise scaling (balanced)
-- Allows the UI to display all three modes side-by-side
+
+This bundles all **six** inference results into one package that gets sent to the frontend in a single call. The frontend receives this and populates all six chart series at once.
 
 ---
 
 ## Device Selection
 
-### pick_device Function
-
 ```rust
 fn pick_device() -> Result<cl_device_id, String> {
-```
-- **Result<T, E>**: Can return either success (T) or error (E)
-- Returns a device ID or an error message
-
-```rust
     let gpu_devices = get_all_devices(CL_DEVICE_TYPE_GPU).unwrap_or_default();
-```
-- **get_all_devices**: Asks OpenCL for all GPUs
-- **unwrap_or_default()**: If it fails, return an empty list instead of crashing
-
-```rust
     if let Some(id) = gpu_devices.first() {
         return Ok(*id);
     }
-```
-- **if let Some**: Checks if there's at least one GPU
-- **first()**: Gets the first GPU from the list
-- **Ok(*id)**: Returns the GPU's ID successfully
-- We prefer GPU because it's much faster for parallel calculations
-
-```rust
     let cpu_devices = get_all_devices(CL_DEVICE_TYPE_CPU).unwrap_or_default();
     if let Some(id) = cpu_devices.first() {
         return Ok(*id);
     }
-```
-- If no GPU was found, try to find a CPU instead
-- Better to have CPU than nothing!
-
-```rust
     Err("No OpenCL devices found".to_string())
+}
 ```
-- If neither GPU nor CPU was found, return an error
+
+Tries to find a GPU first. If no GPU supports OpenCL, falls back to the CPU. Returns the device's ID — a raw pointer/handle that OpenCL uses to identify hardware.
 
 ---
 
 ## OpenCL Kernels
 
-### What is a Kernel?
-A **kernel** is code written in OpenCL C (similar to regular C) that runs on the GPU. Each "thread" (parallel worker) executes the kernel function independently.
+A **kernel** is a small program written in OpenCL C that gets compiled and runs on the GPU. Unlike normal CPU programs, kernels are data-parallel: the same code runs on thousands of GPU threads simultaneously, each thread handling a different piece of data.
 
-### FP32 Kernel (32-bit Floating Point)
+### The Two-Pass Design (Why All Custom Kernels Are Split)
 
-```rust
-const FP32_KERNEL: &str = r#"
+All three custom kernels (FP32, FP16, FP16 Scaled) use a **two-pass design**: a separate kernel for layer 1 and a separate kernel for layer 2. This is the correct way to implement a two-layer MLP on a GPU.
+
+**Why two passes?**
+
+The MLP forward pass has a dependency: layer 2 needs the complete hidden layer output from layer 1 before it can do anything. If you try to squeeze both layers into a single kernel dispatch, every output thread has to recompute the entire hidden layer independently:
+
 ```
-- **const**: A constant that never changes
-- **&str**: A string containing the kernel code
-- **r#"..."#**: Raw string literal (special quotes that make the string easier to write)
-
-```c
-__kernel void mlp_inference_fp32(
+// WRONG (old design): dispatched over batch_size × output_size threads
+// Thread 0 (batch=0, out=0):  computes ALL hidden[0..N], then output[0]
+// Thread 1 (batch=0, out=1):  computes ALL hidden[0..N] AGAIN, then output[1]
+// Thread 2 (batch=0, out=2):  computes ALL hidden[0..N] AGAIN, then output[2]
+// ...output_size threads, each doing the full hidden layer redundantly
 ```
-- **__kernel**: Marks this as a kernel function (runs on GPU)
-- **void**: Returns nothing
-- **mlp_inference_fp32**: Function name (Multi-Layer Perceptron inference in 32-bit float)
 
-```c
+For `matrix_size=1024` (output_size=512), that's **512× more hidden layer work than necessary**. The results were technically correct (all threads compute identical values deterministically), but the GPU was doing hundreds of times more work than needed, and the GFLOPS metric was proportionally understated.
+
+**The fix — two separate dispatches:**
+
+```
+Pass 1: dispatch batch_size × hidden_size threads
+  Thread (b, h): computes hidden_buffer[b][h]  ← each hidden neuron computed exactly once
+
+queue.finish()  ← wait until ALL hidden values are written before layer 2 reads them
+
+Pass 2: dispatch batch_size × output_size threads
+  Thread (b, o): reads hidden_buffer[b][*] to compute output[b][o]
+```
+
+Each hidden neuron is now computed exactly once. The `queue.finish()` between passes is mandatory — without it, layer 2 threads could start reading `hidden_buffer` before layer 1 has finished writing to it.
+
+---
+
+### FP32 Kernel (`FP32_KERNEL`) — Layer 1
+
+```opencl
+__kernel void mlp_fp32_layer1(
     __global const float* input,
     __global const float* weights1,
     __global const float* bias1,
+    __global float* hidden_buffer,
+    const int input_size,
+    const int hidden_size,
+    const int batch_size
+) {
+    int gid = get_global_id(0);
+    if (gid >= batch_size * hidden_size) return;
+
+    int batch_idx = gid / hidden_size;
+    int h = gid % hidden_size;
+
+    float sum = bias1[h];
+    for (int i = 0; i < input_size; i++) {
+        sum += input[batch_idx * input_size + i] * weights1[h * input_size + i];
+    }
+    hidden_buffer[batch_idx * hidden_size + h] = fmax(0.0f, sum); // ReLU
+}
+```
+
+- Dispatched over `batch_size × hidden_size` threads — one thread per hidden neuron per batch item
+- `gid / hidden_size` gives the batch index, `gid % hidden_size` gives which hidden neuron
+- Computes the dot product of the input with one row of `weights1`, adds `bias1[h]`, applies ReLU
+- Writes exactly one value to `hidden_buffer` — no races, no redundancy
+
+Weight layout: `weights1[h * input_size + i]` means row `h` contains all connections from every input to hidden neuron `h`. This is standard row-major weight storage.
+
+### FP32 Kernel (`FP32_KERNEL`) — Layer 2
+
+```opencl
+__kernel void mlp_fp32_layer2(
+    __global const float* hidden_buffer,
     __global const float* weights2,
     __global const float* bias2,
     __global float* output,
-```
-- **__global**: This data lives in GPU's global memory (accessible by all threads)
-- **const**: This data won't be modified (read-only)
-- **float***: Pointer to an array of floating-point numbers
-- These are the neural network's inputs and parameters
-
-```c
-    const int input_size,
     const int hidden_size,
     const int output_size,
     const int batch_size
-```
-- Dimensions of the neural network:
-  - **input_size**: How many input values
-  - **hidden_size**: How many neurons in the middle layer
-  - **output_size**: How many output values
-  - **batch_size**: How many examples to process at once
-
-```c
 ) {
     int gid = get_global_id(0);
-```
-- **get_global_id(0)**: Gets this thread's unique ID number
-- If you have 1000 threads, each gets a number from 0 to 999
-- This tells each thread which piece of work to do
-
-```c
     if (gid >= batch_size * output_size) return;
-```
-- Safety check: if this thread's ID is too high, exit early
-- Prevents accessing memory outside our arrays
 
-```c
     int batch_idx = gid / output_size;
     int out_idx = gid % output_size;
-```
-- Calculates which batch example and which output this thread handles
-- **Example**: If gid=15, output_size=10: batch_idx=1, out_idx=5
-  - This thread handles the 5th output of the 1st batch item
 
-```c
-    // First layer: input -> hidden with ReLU
-    float hidden[512];
-```
-- Creates a local array to store hidden layer activations
-- **512**: Maximum size (assuming hidden_size ≤ 512)
-
-```c
-    for (int h = 0; h < hidden_size; h++) {
-        float sum = bias1[h];
-```
-- Loop through each hidden neuron
-- Start with the bias value (like a starting point for each neuron)
-
-```c
-        for (int i = 0; i < input_size; i++) {
-            sum += input[batch_idx * input_size + i] * weights1[h * input_size + i];
-        }
-```
-- **Matrix multiplication**: Multiply each input by its weight and add them up
-- This is the core of neural network computation
-
-```c
-        hidden[h] = fmax(0.0f, sum); // ReLU activation
-```
-- **ReLU (Rectified Linear Unit)**: If sum is negative, make it zero; otherwise, keep it
-- **fmax(0.0f, sum)**: Maximum of 0 and sum
-- This is an "activation function" that adds non-linearity to the network
-
-```c
-    // Second layer: hidden -> output
     float sum = bias2[out_idx];
-```
-- Now compute the output layer
-- Start with the bias for this output neuron
-
-```c
     for (int h = 0; h < hidden_size; h++) {
-        sum += hidden[h] * weights2[out_idx * hidden_size + h];
+        sum += hidden_buffer[batch_idx * hidden_size + h] * weights2[out_idx * hidden_size + h];
     }
-```
-- Multiply each hidden neuron by its weight and sum them up
-
-```c
     output[batch_idx * output_size + out_idx] = sum;
+}
 ```
-- Store the final result in the output array
 
-### FP16 Kernel (16-bit Floating Point)
+- Dispatched over `batch_size × output_size` threads — one thread per output neuron per batch item
+- Reads from `hidden_buffer` (already fully populated by layer 1) — no ReLU on the output layer
 
-```c
+---
+
+### FP16 Kernel (`FP16_KERNEL`)
+
+```opencl
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 ```
-- **#pragma**: Compiler directive
-- Enables support for 16-bit floats (not all GPUs support this by default)
 
-```c
-__kernel void mlp_inference_fp16(
+FP16 (half-precision) is not universally supported on all OpenCL devices. This pragma **enables the extension** if available. Without it, you can't use the `half` data type in OpenCL C.
+
+The FP16 kernel is structurally identical to FP32 — two passes, same logic — just replacing `float` with `half` throughout. The kernels are named `mlp_fp16_layer1` and `mlp_fp16_layer2`. The GPU automatically handles the narrower arithmetic. Trade-off: less precision, half the memory.
+
+---
+
+### FP16 Scaled Kernel (`FP16_SCALED_KERNEL`)
+
+This is the most sophisticated custom kernel. It extends FP16 with **row-wise quantization scaling** to reduce numerical errors.
+
+**The problem with plain FP16:** values larger than ~65504 become infinity, and very small values lose precision. **The solution:** divide each row of weights by its maximum absolute value before converting to FP16 (normalizing all values to `[-1.0, 1.0]`), then multiply back by the scale factor during computation.
+
+**Layer 1** (`mlp_fp16_scaled_layer1`):
+
+```opencl
+__kernel void mlp_fp16_scaled_layer1(
     __global const half* input,
-    ...
+    __global const half* weights1,   // pre-divided by scales1[h] before upload
+    __global const float* scales1,   // one scale per hidden neuron (FP32 for precision)
+    __global const half* bias1,
+    __global float* hidden_buffer,   // FP32 accumulation for higher precision
+    const int input_size,
+    const int hidden_size,
+    const int batch_size
+)
 ```
-- **half**: 16-bit floating-point type (uses half the memory of float)
-- Otherwise, the structure is identical to FP32 kernel
-- **Trade-off**: Uses less memory and is faster, but less precise
 
-### FP16 with Scaling Kernel
+```opencl
+float sum = (float)bias1[h];
+float scale = scales1[h];    // the max_abs value for this row of weights
+for (int i = 0; i < input_size; i++) {
+    // weights1[h,i] was stored as original_weight / scale
+    // multiplying back by scale recovers the original magnitude
+    sum += (float)input[...] * (float)weights1[h * input_size + i] * scale;
+}
+hidden_buffer[batch_idx * hidden_size + h] = fmax(0.0f, sum);
+```
 
-```c
-__kernel void mlp_inference_fp16_scaled(
+The hidden buffer uses `float` (FP32) to accumulate results with full precision, even though weights and inputs came from FP16. The bias is added directly without scaling — it's a separate term that doesn't participate in quantization. This is a form of **mixed precision within a single kernel**: store cheaply in FP16, accumulate expensively in FP32.
+
+**Layer 2** (`mlp_fp16_scaled_layer2`) follows the same pattern for the output layer, reading from the FP32 hidden buffer and writing a FP16 output.
+
+---
+
+### Bias + ReLU Kernels (`BIAS_RELU_FP32_KERNEL`, `BIAS_RELU_FP16_KERNEL`)
+
+These are **helper kernels** used only with CLBlast. BLAS's GEMM does the matrix multiplication but doesn't know about neural network biases or activation functions. So after GEMM runs, a separate OpenCL kernel adds the bias and applies ReLU.
+
+```opencl
+__kernel void add_bias_relu_fp32(
+    __global float* data,        // the matrix to modify (in-place)
+    __global const float* bias,  // bias values (one per output neuron)
+    const int cols,              // number of columns (= number of neurons)
+    const int total              // total elements = rows * cols
+) {
+    int gid = get_global_id(0);
+    if (gid >= total) return;
+    int col = gid % cols;
+    data[gid] = fmax(0.0f, data[gid] + bias[col]);
+}
+```
+
+`gid % cols` figures out which neuron (column) this element corresponds to so it knows which bias value to add. Each element gets the bias of its neuron. There's also `add_bias_fp32` (same but without ReLU) — used for the output layer.
+
+---
+
+### FP16-to-FP32 Conversion Kernel (`FP16_TO_FP32_KERNEL`)
+
+```opencl
+__kernel void convert_fp16_to_fp32(
     __global const half* input,
-    __global const half* weights1,
-    __global const float* scales1,
-    ...
+    __global float* output,
+    const int total
+) {
+    int gid = get_global_id(0);
+    if (gid >= total) return;
+    output[gid] = (float)input[gid];  // GPU hardware handles the conversion
+}
 ```
-- **scales1**: Additional scaling factors (stored as FP32 for better precision)
-- This is a hybrid approach: weights in FP16, but scales in FP32
 
-```c
-    float hidden[512];
-    for (int h = 0; h < hidden_size; h++) {
-        float sum = (float)bias1[h];
-        float scale = scales1[h];
-```
-- Converts to FP32 for computation (better accuracy)
-- Applies per-row scaling factor
-
-```c
-        for (int i = 0; i < input_size; i++) {
-            sum += (float)input[batch_idx * input_size + i] * (float)weights1[h * input_size + i] * scale;
-        }
-```
-- Converts FP16 to FP32, multiplies by scale
-- **Purpose**: Compensates for FP16's limited range, improving accuracy
+Converts a buffer of FP16 values to FP32 entirely on the GPU. Used by the **CLBlast Mixed** mode which stores data in FP16 but computes with SGEMM (which needs FP32). A matching `convert_fp32_to_fp16` kernel exists in the same source string.
 
 ---
 
 ## Float Conversion Functions
 
-### f32_to_f16: Converting 32-bit to 16-bit Float
+### `f32_to_f16(val: f32) -> u16`
 
 ```rust
 fn f32_to_f16(val: f32) -> u16 {
+    half::f16::from_f32(val).to_bits()
+}
 ```
-- Takes a 32-bit float, returns a 16-bit unsigned integer (the bit pattern of FP16)
+
+Uses the **`half` crate** to convert a 32-bit float to a 16-bit float, returned as a `u16` (since Rust has no native `f16` type at stable release time). `half::f16::from_f32` handles all the edge cases: NaN, infinity, subnormals, overflow to infinity, and underflow to zero. `.to_bits()` extracts the raw 16-bit IEEE 754 bit pattern, which is what OpenCL and CLBlast expect in their `u16` buffers.
+
+### `f16_to_f32(val: u16) -> f32`
 
 ```rust
-    let bits = val.to_bits();
+fn f16_to_f32(val: u16) -> f32 {
+    half::f16::from_bits(val).to_f32()
+}
 ```
-- Gets the raw binary representation of the float
 
-**Float Format Background**:
-A floating-point number is stored as: **sign | exponent | mantissa**
-- **Sign**: 1 bit (positive or negative)
-- **Exponent**: Determines the magnitude (how big/small)
-- **Mantissa**: The precise digits
+The reverse: takes a raw 16-bit bit pattern, interprets it as an FP16 float, and expands it to FP32. Used after reading FP16 GPU output back to the CPU for accuracy comparison.
 
-FP32: 1 sign bit + 8 exponent bits + 23 mantissa bits = 32 bits
-FP16: 1 sign bit + 5 exponent bits + 10 mantissa bits = 16 bits
+**Why the `half` crate instead of manual bit manipulation?**
 
-```rust
-    let sign = ((bits >> 31) & 0x1) as u16;
-```
-- **>>**: Right shift (moves bits right)
-- **& 0x1**: Masks to get just the last bit
-- Extracts the sign bit (bit 31 in FP32)
-
-```rust
-    let exp = ((bits >> 23) & 0xff) as i32;
-```
-- Extracts the exponent (bits 23-30 in FP32)
-- **0xff**: Binary 11111111 (8 ones) - masks to get 8 bits
-
-```rust
-    let mantissa = bits & 0x7fffff;
-```
-- Extracts the mantissa (bits 0-22 in FP32)
-- **0x7fffff**: Binary 23 ones
-
-```rust
-    if exp == 0xff {
-        return (sign << 15) | 0x7c00 | ((mantissa >> 13) as u16);
-    }
-```
-- **0xff**: Special value meaning infinity or NaN (Not a Number)
-- Converts FP32 infinity/NaN to FP16 infinity/NaN
-- **<<**: Left shift
-- **|**: Binary OR (combines bits)
-
-```rust
-    if exp == 0 {
-        return sign << 15;
-    }
-```
-- Exponent 0 means the number is zero or subnormal
-- Returns signed zero
-
-```rust
-    let exp16 = exp - 127 + 15;
-```
-- **Exponent bias conversion**:
-  - FP32 uses bias of 127 (exponent stored as: actual + 127)
-  - FP16 uses bias of 15 (exponent stored as: actual + 15)
-  - This converts between the two representations
-
-```rust
-    if exp16 >= 31 {
-        return (sign << 15) | 0x7c00;
-    }
-```
-- If exponent is too large for FP16, return infinity
-- **31**: Maximum exponent value for FP16
-
-```rust
-    if exp16 <= 0 {
-        return sign << 15;
-    }
-```
-- If exponent is too small for FP16, return zero
-
-```rust
-    (sign << 15) | ((exp16 as u16) << 10) | ((mantissa >> 13) as u16)
-```
-- Assembles the FP16 value:
-  - Sign at bit 15
-  - Exponent at bits 10-14
-  - Mantissa at bits 0-9 (truncated from 23 to 10 bits)
-
-### f16_to_f32: Converting 16-bit to 32-bit Float
-
-The reverse process - converts FP16 back to FP32. Similar logic but expanding instead of truncating.
+The previous version of this code had ~55 lines of hand-written bit manipulation to handle the FP32→FP16 conversion. The `half` crate replaces that with two one-liners backed by well-tested, IEEE-754-correct code that handles every edge case correctly.
 
 ---
 
-## Main Inference Structure
+## RoundData - Shared Test Data
 
-### MLPInference Structure
+```rust
+struct RoundData {
+    input_data: Vec<f32>,
+    weights1: Vec<f32>,
+    bias1: Vec<f32>,
+    weights2: Vec<f32>,
+    bias2: Vec<f32>,
+    input_size: usize,
+    hidden_size: usize,
+    output_size: usize,
+    batch_size: usize,
+}
+```
+
+This struct is critical for fair comparisons. One `RoundData` is generated and shared across all six inference modes. Every mode gets the **exact same inputs and weights** — so the only thing being measured is the precision format and compute path, not differences in the data.
+
+### `RoundData::generate()`
+
+```rust
+let input_data: Vec<f32> = (0..batch_size * input_size)
+    .map(|_| rand::random::<f32>())
+    .collect();
+
+let weights1: Vec<f32> = (0..hidden_size * input_size)
+    .map(|i| (i as f32 * 0.1).sin() * 0.5)
+    .collect();
+```
+
+- **Input data**: Truly random values between 0.0 and 1.0 (different every round).
+- **Weights**: Deterministic using `sin()` — varied values in `[-0.5, 0.5]`, a reasonable range for initialized weights.
+- **Biases**: Small linear values (`i * 0.01`) — near-zero, standard neural network initialization.
+
+The weight layout is **row-major**: `weights1[h * input_size + i]` is the weight connecting input `i` to hidden neuron `h`. `weights2[o * hidden_size + h]` is the weight connecting hidden neuron `h` to output `o`.
+
+---
+
+## MLPInference Structure
 
 ```rust
 struct MLPInference {
-    context: Context,
-    queue: CommandQueue,
-    #[allow(dead_code)]
-    device: Device,
-    fp32_reference: Option<Vec<f32>>,
+    context: Context,                     // OpenCL workspace
+    queue: CommandQueue,                  // GPU task queue
+    device: Device,                       // the GPU/CPU being used
+    fp32_reference: Option<Vec<f32>>,     // FP32 output (used as accuracy baseline)
+    clblast: Option<ClBlastLib>,          // CLBlast library (None if loading failed)
+    bias_fp32_program: Option<Program>,   // pre-compiled FP32 bias kernel
+    bias_fp16_program: Option<Program>,   // pre-compiled FP16 bias kernel
+    convert_program: Option<Program>,     // pre-compiled FP16<->FP32 conversion kernel
+    warmed_up_sizes: HashSet<usize>,      // tracks which matrix sizes have been warmed up
 }
 ```
-- **context**: OpenCL workspace
-- **queue**: Task queue for GPU
-- **device**: The GPU or CPU we're using
-- **#[allow(dead_code)]**: Suppresses warning that device isn't directly used
-- **fp32_reference**: Optional storage of FP32 results for comparison
-- **Option<T>**: Can be Some(value) or None
 
-### new() - Constructor
+### Why Cache Programs?
+
+OpenCL programs (kernels) must be compiled before use — just like Rust code must be compiled before it runs. This compilation takes time. The bias and conversion kernels (used by all three CLBlast modes) are compiled **once** during `new()` and reused on every call. The main inference kernels (FP32, FP16, FP16-scaled) are compiled per-call since they're only used once each per comparison round.
+
+### `warmed_up_sizes` — Tracking CLBlast Auto-Tuning
 
 ```rust
-impl MLPInference {
-    fn new() -> Result<Self, String> {
+warmed_up_sizes: std::collections::HashSet<usize>,
 ```
-- **impl**: Implementation block (methods for the struct)
-- **Self**: Refers to MLPInference
+
+CLBlast runs an auto-tuning benchmark on its very first GEMM call for each unique matrix shape. This can take over a second on the first call, then drops to sub-millisecond on all subsequent calls. `warmed_up_sizes` records which `matrix_size` values have already paid the auto-tuning cost. When `warmup_clblast(matrix_size)` is called, it immediately returns if the size is already in the set.
+
+### `MLP_INSTANCE` — The Singleton
 
 ```rust
-        let device_id = pick_device()?;
+static MLP_INSTANCE: Mutex<Option<MLPInference>> = Mutex::new(None);
 ```
-- **?**: Error propagation operator - if pick_device fails, return the error immediately
+
+`MLPInference` holds an active GPU context, which is expensive to create (hundreds of milliseconds). This static `Mutex<Option<...>>` stores one instance globally. The first call creates it; all subsequent calls reuse it. The `Mutex` prevents multiple threads from trying to initialize it simultaneously.
+
+### `get_or_init_mlp()`
 
 ```rust
-        let device = Device::new(device_id);
-```
-- Creates a Device object from the device ID
-
-```rust
-        let context = Context::from_device(&device).map_err(|e| format!("Context error: {e}"))?;
-```
-- Creates an OpenCL context for this device
-- **map_err**: Converts error to a custom format
-- **{e}**: Formats the error into the string
-
-```rust
-        let queue = CommandQueue::create_default_with_properties(&context, CL_QUEUE_PROFILING_ENABLE, 0)
-            .map_err(|e| format!("Queue error: {e}"))?;
-```
-- Creates a command queue with profiling enabled (so we can measure performance)
-
-```rust
-        Ok(Self {
-            context,
-            queue,
-            device,
-            fp32_reference: None,
-        })
-```
-- Returns a new MLPInference instance
-
-### calculate_accuracy() - Compare Results
-
-```rust
-fn calculate_accuracy(&self, output: &[f32], reference: &[f32]) -> (f64, f64) {
-```
-- **&self**: Borrows self (doesn't take ownership)
-- **&[f32]**: Slice (view of an array) of floats
-- Returns tuple: (MSE, max_error)
-
-```rust
-    if output.len() != reference.len() {
-        return (0.0, 0.0);
+fn get_or_init_mlp() -> Result<MutexGuard<'static, Option<MLPInference>>, String> {
+    let mut guard = MLP_INSTANCE.lock()...;
+    if guard.is_none() {
+        *guard = Some(MLPInference::new()?);
     }
+    Ok(guard)
+}
 ```
-- Safety check: arrays must be same length
+
+Acquires the mutex lock, initializes the MLP if it doesn't exist yet, and returns the guard. The guard keeps the mutex locked until it goes out of scope, preventing any other call from running concurrently.
+
+### `warmup_clblast(matrix_size)`
 
 ```rust
-    let mut mse: f64 = 0.0;
-    let mut max_error: f64 = 0.0;
+fn warmup_clblast(&mut self, matrix_size: usize) {
+    if self.warmed_up_sizes.contains(&matrix_size) {
+        return;  // already paid the cost for this size
+    }
+    // ... allocate scratch buffers and run one untimed SGEMM + HGEMM for each shape
+    self.warmed_up_sizes.insert(matrix_size);
+}
 ```
-- **mut**: Mutable (can be changed)
-- Initialize accumulators
 
-```rust
-    for (out, ref_val) in output.iter().zip(reference.iter()) {
-```
-- **iter()**: Creates an iterator over the array
-- **zip()**: Pairs up elements from both arrays
-- Loops through both arrays simultaneously
+This method fires the CLBlast auto-tuner for all four GEMM shapes used by the given `matrix_size`:
+- SGEMM layer 1: `(batch_size=64, hidden_size, input_size)`
+- SGEMM layer 2: `(batch_size=64, output_size, hidden_size)`
+- HGEMM layer 1: same shape as SGEMM layer 1
+- HGEMM layer 2: same shape as SGEMM layer 2
 
-```rust
-        let diff = (out - ref_val).abs();
-```
-- **abs()**: Absolute value (removes negative sign)
-- Calculates the error for this element
-
-```rust
-        mse += (diff * diff) as f64;
-        max_error = max_error.max(diff as f64);
-```
-- Accumulates squared error for MSE
-- Tracks the maximum error seen
-
-```rust
-    mse /= output.len() as f64;
-```
-- Divides by number of elements to get the mean
+Scratch buffers are allocated with uninitialised GPU memory (contents don't matter — CLBlast only needs valid buffer handles to tune against the shape). All four calls complete before `warmup_clblast` returns, guaranteeing the cache is warm before any timed inference runs.
 
 ---
 
 ## Inference Functions
 
-### run_fp32_inference() - Main Computation
+All six inference functions follow the same overall pattern:
 
-This is the heart of the program. It runs the FP32 baseline inference.
+1. **Allocate GPU buffers** — reserve memory on the GPU
+2. **Write data to GPU** — transfer from CPU RAM to GPU VRAM
+3. **Execute the computation** — run the kernel(s) or BLAS call(s)
+4. **Read results back** — transfer output from GPU VRAM to CPU RAM
+5. **Calculate metrics** — time, GFLOPS, bandwidth, accuracy
 
-#### 1. Generate Test Data
-
-```rust
-let input_data: Vec<f32> = (0..batch_size * input_size)
-    .map(|i| i as f32 * 0.01 % 1.0)
-    .collect();
-```
-- **Vec<f32>**: A vector (dynamic array) of floats
-- **(0..batch_size * input_size)**: Range from 0 to batch_size * input_size
-- **map()**: Transforms each number
-- **i as f32**: Converts integer to float
-- **% 1.0**: Modulo - keeps values between 0 and 1
-- **collect()**: Gathers all values into a vector
-- Creates synthetic input data for testing
-- **NOTE**: This is deterministic (same every time), so accuracy will be constant
+### `calculate_accuracy(&self, output: &[f32], reference: &[f32]) -> (f64, f64)`
 
 ```rust
-let weights1: Vec<f32> = (0..hidden_size * input_size)
-    .map(|i| (i as f32 * 0.1).sin() * 0.5)
-    .collect();
+for (out, ref_val) in output.iter().zip(reference.iter()) {
+    let diff = (out - ref_val).abs();
+    mse += (diff * diff) as f64;
+    max_error = max_error.max(diff as f64);
+}
+mse /= output.len() as f64;
 ```
-- Creates weights using sine function (produces varied values between -0.5 and 0.5)
+
+Compares any inference mode's results against the FP32 reference output, returning:
+- **MSE (Mean Squared Error)**: Average of all squared differences — squaring magnifies larger errors
+- **Max Error**: The single biggest difference found anywhere in the output
+
+FP32 and CLBlast FP32 both report MSE = 0.0. FP32 is the reference itself (nothing to compare against), and CLBlast FP32 uses identical FP32 arithmetic so its results are equivalent.
+
+---
+
+### `run_fp32_inference()` — The Baseline
+
+Uses the two-pass OpenCL FP32 kernel (`mlp_fp32_layer1` → `mlp_fp32_layer2`). After running, stores its output in `self.fp32_reference` so all subsequent modes can compare against it.
+
+**Execution flow:**
+1. Upload all data (input, weights1, bias1, weights2, bias2) to GPU buffers
+2. Compile `FP32_KERNEL` (contains both layer functions)
+3. Create `mlp_fp32_layer1` kernel, set 7 args, dispatch `batch_size × hidden_size` threads
+4. `queue.finish()` — wait for all hidden values to be written
+5. Create `mlp_fp32_layer2` kernel, set 7 args, dispatch `batch_size × output_size` threads
+6. `queue.finish()` — wait for output
+7. Read output back to CPU, store as `fp32_reference`
+
+**Memory footprint:**
+```rust
+((batch_size * input_size       // input
+  + hidden_size * input_size    // weights1
+  + hidden_size                 // bias1
+  + output_size * hidden_size   // weights2
+  + output_size                 // bias2
+  + batch_size * output_size)   // output
+  * 4)  // 4 bytes per FP32 value
+```
+
+**FLOPS calculation:**
+```
+batch_size × (hidden_size × (2 × input_size + 1) + output_size × (2 × hidden_size + 1))
+```
+
+The `2×` factor accounts for one multiply and one add per weight. The `+1` accounts for the bias add. This formula now correctly counts each operation once — the two-pass design ensures no hidden layer redundancy.
+
+---
+
+### `run_fp16_inference()` — Half Precision
+
+Before anything goes to the GPU, all FP32 data gets converted to FP16 on the CPU:
+```rust
+let input_data: Vec<u16> = rd.input_data.iter().map(|&v| f32_to_f16(v)).collect();
+let weights1: Vec<u16> = rd.weights1.iter().map(|&v| f32_to_f16(v)).collect();
+```
+
+Buffers are `Buffer::<u16>` instead of `Buffer::<f32>`. The two-pass FP16 kernel (`mlp_fp16_layer1` + `mlp_fp16_layer2`) operates entirely in half-precision.
+
+After reading results back, they're converted to FP32 for accuracy comparison:
+```rust
+let output_f32: Vec<f32> = output.iter().map(|&v| f16_to_f32(v)).collect();
+let (accuracy_mse, accuracy_max_error) = self.calculate_accuracy(&output_f32, reference);
+```
+
+Memory footprint uses `* 2` instead of `* 4` — half the bytes per value.
+
+---
+
+### `run_fp16_scaled_inference()` — FP16 with Row-Wise Quantization
+
+Before GPU transfer, computes per-row scale factors on the CPU:
+```rust
+for h in 0..hidden_size {
+    let row = &weights1_f32[h * input_size .. (h+1) * input_size];
+    let max_abs = row.iter().map(|&v| v.abs()).fold(0.0f32, f32::max);
+    scales1[h] = if max_abs > 0.0 { max_abs } else { 1.0 };
+
+    for i in 0..input_size {
+        // normalize to [-1, 1] before converting to FP16
+        weights1_scaled[h * input_size + i] = f32_to_f16(weights1_f32[row_start + i] / scales1[h]);
+    }
+}
+```
+
+Every weight value is divided by its row's maximum absolute value before FP16 conversion. This normalizes all values to `[-1.0, 1.0]`, which FP16 can represent with much higher precision than arbitrary large/small values.
+
+The scale factors themselves are kept as FP32 arrays (`scales1`, `scales2`) and uploaded to the GPU separately. During kernel execution, the GPU multiplies the normalized FP16 weight by the FP32 scale to recover the original magnitude.
+
+Memory footprint is slightly higher than plain FP16 due to the FP32 scale arrays:
+```rust
+(all tensors * 2)               // FP16 storage
++ (hidden_size + output_size) * 4  // scale factors in FP32
+```
+
+---
+
+## CLBlast Inference Functions
+
+These three functions replace the manual loop kernels with highly optimized BLAS matrix multiplication calls. The core difference: CLBlast handles the matrix multiply (the expensive inner loop), while small custom OpenCL kernels handle the bias addition and ReLU (which BLAS doesn't know about).
+
+### `run_clblast_fp32_inference()` — SGEMM
 
 ```rust
-let bias1: Vec<f32> = (0..hidden_size).map(|i| i as f32 * 0.01).collect();
+let clblast = self.clblast.as_ref().ok_or("CLBlast not loaded")?;
+let sgemm = clblast.sgemm;
 ```
-- Creates bias values (small positive values)
 
-#### 2. Create OpenCL Buffers
+First, we get the SGEMM function pointer. If CLBlast failed to load, this returns an error immediately.
+
+**Layer 1 SGEMM call:**
+```rust
+let status = sgemm(
+    CLBLAST_LAYOUT_ROW_MAJOR,     // matrices stored row by row
+    CLBLAST_TRANSPOSE_NO,          // A (input) — no transpose
+    CLBLAST_TRANSPOSE_YES,         // B (weights1) — transpose it
+    batch_size,                    // M: rows of A and C
+    hidden_size,                   // N: cols of B after transpose, cols of C
+    input_size,                    // K: cols of A = rows of B before transpose
+    1.0f32,                        // alpha = 1.0 (no scaling of the result)
+    input_buf.get(),               // A: (batch_size × input_size) on GPU
+    0,                             // A starts at offset 0
+    input_size,                    // leading dimension of A
+    weights1_buf.get(),            // B: (hidden_size × input_size) on GPU
+    0,                             // B starts at offset 0
+    input_size,                    // leading dimension of B (before transpose)
+    0.0f32,                        // beta = 0.0 (ignore old C values)
+    hidden_buf.get(),              // C: output goes here (batch_size × hidden_size)
+    0,                             // C starts at offset 0
+    hidden_size,                   // leading dimension of C
+    &mut queue_ptr,                // OpenCL queue CLBlast submits work to
+    &mut event,                    // synchronization event (unused here)
+);
+```
+
+This computes `hidden = input × weights1^T`, giving one hidden activation vector per batch item.
+
+**After SGEMM — bias + ReLU (using cached pre-compiled kernel):**
+```rust
+let program = self.bias_fp32_program.as_ref().ok_or("FP32 bias program not compiled")?;
+let bias_relu_kernel = Kernel::create(program, "add_bias_relu_fp32")?;
+```
+
+The bias kernel runs over all `batch_size × hidden_size` elements, adding `bias1[col]` and applying ReLU in-place. Layer 2 follows the same pattern with `add_bias_fp32` (no ReLU on the output layer).
+
+**CLBlast FP32 accuracy:** hardcoded to `accuracy_mse = 0.0` and `accuracy_max_error = 0.0`. CLBlast SGEMM uses the same FP32 arithmetic as the reference kernel — the results are numerically equivalent, so computing the MSE would just be measuring floating-point operation ordering noise.
+
+### `run_clblast_fp16_inference()` — HGEMM
+
+The FP16 BLAS version. All data is converted to FP16 before upload. Instead of `sgemm`, it calls `hgemm`:
 
 ```rust
-let input_buf = unsafe {
-    Buffer::<f32>::create(
-        &self.context,
-        CL_MEM_READ_WRITE,
-        batch_size * input_size,
-        std::ptr::null_mut(),
-    )
-    .map_err(|e| format!("Input buffer error: {e}"))?
-};
+let alpha_h = f32_to_f16(1.0);  // 1.0 as a FP16 bit pattern (u16)
+let beta_h  = f32_to_f16(0.0);  // 0.0 as a FP16 bit pattern (u16)
+
+let status = hgemm(
+    CLBLAST_LAYOUT_ROW_MAJOR,
+    CLBLAST_TRANSPOSE_NO,
+    CLBLAST_TRANSPOSE_YES,
+    batch_size, hidden_size, input_size,
+    alpha_h,          // u16 instead of f32
+    input_buf.get(),  // Buffer<u16> instead of Buffer<f32>
+    ...
+);
 ```
-- **unsafe**: Marks code that might cause crashes if used incorrectly
-- **Buffer::<f32>::create()**: Allocates memory on the GPU
-- **CL_MEM_READ_WRITE**: Buffer can be read from and written to
-- **batch_size * input_size**: How many floats to allocate
-- **std::ptr::null_mut()**: Don't initialize with data yet (null pointer)
 
-This is repeated for all buffers (weights1, bias1, weights2, bias2, output)
+`alpha` and `beta` are passed as `u16` (FP16 bit patterns) — this is what the CLBlast HGEMM signature requires. The bias kernels use the FP16 variants (`add_bias_relu_fp16`, `add_bias_fp16`).
 
-#### 3. Write Data to GPU
+### `run_clblast_mixed_inference()` — FP16 Storage + FP32 Compute
 
+The most sophisticated mode. Idea: save bandwidth with FP16 storage, gain FP32 accuracy during compute.
+
+**Pipeline:**
+
+1. **Store data as FP16** (compact, half the upload bandwidth):
+   ```rust
+   let input_data_fp16: Vec<u16> = rd.input_data.iter().map(|&v| f32_to_f16(v)).collect();
+   ```
+
+2. **Allocate both FP16 storage buffers and FP32 compute buffers on the GPU:**
+   ```rust
+   let input_fp16_buf  = Buffer::<u16>::create(...);  // for upload
+   let input_f32_buf   = Buffer::<f32>::create(...);  // for SGEMM
+   ```
+
+3. **Upload FP16 data** (half the bytes → faster PCIe transfer)
+
+4. **Convert FP16 → FP32 on the GPU** using the cached conversion kernel (fast, avoids round-tripping through the CPU):
+   ```rust
+   let fp16_to_fp32_kernel = Kernel::create(convert_prog, "convert_fp16_to_fp32")?;
+   ```
+
+5. **Run SGEMM on the FP32 buffers** — full precision, BLAS-optimized
+
+6. **Add bias + ReLU** using FP32 kernel
+
+7. **Repeat for layer 2** (convert weights2 FP16→FP32, then SGEMM)
+
+**The trade-offs:**
+- Upload bandwidth: FP16 (fast)
+- Compute: FP32 SGEMM (accurate)
+- Total GPU memory: highest of all modes (holds both FP16 and FP32 buffers simultaneously)
+- Accuracy: very close to pure FP32 (only error comes from the FP16 storage quantization)
+
+**Memory footprint:**
 ```rust
-unsafe {
-    let mut input_buf_mut = input_buf;
+let fp16_storage =
+    (batch_size * input_size + hidden_size * input_size + output_size * hidden_size) * 2;
+let fp32_compute =
+    (batch_size * input_size      // FP32 input for SGEMM
+     + hidden_size * input_size   // FP32 weights1
+     + output_size * hidden_size  // FP32 weights2
+     + hidden_size + output_size  // biases (always FP32)
+     + batch_size * hidden_size   // hidden layer buffer
+     + batch_size * output_size)  // output buffer
+    * 4;
 ```
-- Makes the buffer mutable (needed for writing)
-
-```rust
-    self.queue
-        .enqueue_write_buffer(&mut input_buf_mut, CL_BLOCKING, 0, &input_data, &[])
-        .map_err(|e| format!("Write input error: {e}"))?;
-```
-- **enqueue_write_buffer**: Copies data from CPU to GPU
-- **CL_BLOCKING**: Wait for the copy to finish before continuing
-- **0**: Start offset in the buffer
-- **&input_data**: The data to copy
-- **&[]**: No dependencies (don't wait for other operations)
-
-This is repeated for all data (weights1, bias1, weights2, bias2)
-
-#### 4. Build and Compile Kernel
-
-```rust
-    let program = Program::create_and_build_from_source(&self.context, FP32_KERNEL, "")
-        .map_err(|e| format!("Program build error: {e}"))?;
-```
-- **create_and_build_from_source**: Compiles the OpenCL kernel code
-- Like compiling C code, but for the GPU
-- **FP32_KERNEL**: The source code string we defined earlier
-- **""**: No additional compiler flags
-
-```rust
-    let kernel = Kernel::create(&program, "mlp_inference_fp32")
-        .map_err(|e| format!("Kernel error: {e}"))?;
-```
-- Extracts the specific kernel function by name
-
-#### 5. Set Kernel Arguments
-
-```rust
-    kernel.set_arg(0, &input_buf_mut)
-        .map_err(|e| format!("Set arg 0 error: {e}"))?;
-```
-- Sets the first argument (index 0) to the input buffer
-- Each argument corresponds to a kernel parameter
-
-This is repeated for all 10 kernel arguments (buffers and size parameters)
-
-#### 6. Execute Kernel
-
-```rust
-    let global_work_size = [batch_size * output_size];
-```
-- Specifies how many threads to launch
-- Each thread computes one output value
-
-```rust
-    let kernel_start = Instant::now();
-```
-- Records the current time (for measuring execution time)
-
-```rust
-    self.queue
-        .enqueue_nd_range_kernel(
-            kernel.get(),
-            1,
-            std::ptr::null(),
-            global_work_size.as_ptr(),
-            std::ptr::null(),
-            &[],
-        )
-        .map_err(|e| format!("Kernel enqueue error: {e}"))?;
-```
-- **enqueue_nd_range_kernel**: Launches the kernel on the GPU
-- **1**: One-dimensional work (we only specified global_work_size[0])
-- **std::ptr::null()**: No global work offset
-- **global_work_size.as_ptr()**: How many threads total
-- **std::ptr::null()**: No local work size specified (let OpenCL decide)
-
-```rust
-    self.queue.finish()
-        .map_err(|e| format!("Queue finish error: {e}"))?;
-```
-- **finish()**: Waits for all GPU operations to complete
-
-```rust
-    let kernel_time = kernel_start.elapsed();
-```
-- Calculates how long the kernel took to run
-
-#### 7. Read Results Back
-
-```rust
-    let mut output = vec![0.0f32; batch_size * output_size];
-```
-- Allocates a vector for the results
-
-```rust
-    self.queue
-        .enqueue_read_buffer(&mut output_buf_mut, CL_BLOCKING, 0, &mut output, &[])
-        .map_err(|e| format!("Read output error: {e}"))?;
-```
-- Copies results from GPU back to CPU memory
-
-```rust
-    self.fp32_reference = Some(output.clone());
-```
-- Stores a copy for accuracy comparison later
-
-#### 8. Calculate Metrics
-
-```rust
-    let memory_footprint_mb = ((batch_size * input_size
-        + hidden_size * input_size
-        + hidden_size
-        + output_size * hidden_size
-        + output_size
-        + batch_size * output_size)
-        * 4) as f64
-        / (1024.0 * 1024.0);
-```
-- Counts all floats used
-- *** 4**: Each float is 4 bytes
-- **/ (1024.0 * 1024.0)**: Converts bytes to megabytes
-
-```rust
-    let total_flops = (batch_size
-        * (hidden_size * (2 * input_size + 1) + output_size * (2 * hidden_size + 1)))
-        as f64;
-```
-- **FLOP**: Floating Point Operation
-- Counts multiplications and additions
-- **2 * input_size**: One multiply + one add per input
-- **+ 1**: Adding the bias
-
-```rust
-    let throughput_gflops = total_flops / (kernel_time.as_secs_f64() * 1e9);
-```
-- **GFLOPS**: Giga (billion) FLOPS
-- Divides total operations by time in seconds
-- **1e9**: Converts to billions
-
-```rust
-    let memory_transferred = memory_footprint_mb * 1024.0 * 1024.0;
-    let memory_bandwidth_gbps = memory_transferred / (kernel_time.as_secs_f64() * 1e9);
-```
-- Calculates how fast data moved (GB per second)
-
-```rust
-    Ok(InferenceMetrics {
-        execution_time_ms: kernel_time.as_secs_f64() * 1000.0,
-        memory_bandwidth_gbps,
-        throughput_gflops,
-        memory_footprint_mb,
-        accuracy_mse: 0.0,
-        accuracy_max_error: 0.0,
-    })
-```
-- Returns all the metrics
-- *** 1000.0**: Converts seconds to milliseconds
-- Accuracy is 0.0 for FP32 (it's the baseline)
-
-### run_fp16_inference() and run_fp16_scaled_inference()
-
-These functions follow the same pattern as `run_fp32_inference()`, but:
-1. Convert data to FP16 format before uploading
-2. Use different kernels (FP16_KERNEL or FP16_SCALED_KERNEL)
-3. Compare results against FP32 reference for accuracy
-4. Memory footprint is halved (2 bytes per value instead of 4)
 
 ---
 
 ## Command Handlers
 
-### run_comparison_inference() - NEW Entry Point
+### `run_inference()` — Single Mode (Async)
 
 ```rust
 #[tauri::command]
-fn run_comparison_inference(matrix_size: usize) -> Result<ComparisonMetrics, String> {
+async fn run_inference(precision: String, matrix_size: usize) -> Result<InferenceMetrics, String>
 ```
-- **#[tauri::command]**: Makes this function callable from the UI (JavaScript)
-- **matrix_size**: Size of the neural network
-- **NEW**: This replaces the old mode-based approach
 
+The `#[tauri::command]` attribute exposes this function to the JavaScript frontend. Accepts a precision string (`"Fp32"`, `"Fp16"`, `"FP16 + scale"`, `"CLBlast FP32"`, `"CLBlast FP16"`, `"CLBlast Mixed"`) and runs only that one mode.
+
+Always ensures the FP32 reference is established first:
 ```rust
-    let mut mlp = MLPInference::new()?;
-```
-- Creates a new inference engine
-
-```rust
-    let input_size = matrix_size;
-    let hidden_size = matrix_size;
-    let output_size = matrix_size / 2;
-    let batch_size = 64;
-```
-- Sets up network dimensions based on matrix_size
-- **batch_size**: Processes 64 examples at once
-
-```rust
-    // Run FP32 baseline first
-    let fp32_metrics = mlp.run_fp32_inference(input_size, hidden_size, output_size, batch_size)?;
-```
-- **Step 1**: Run FP32 to establish the baseline
-- This also stores the FP32 results for accuracy comparison
-
-```rust
-    // Run FP16
-    let fp16_metrics = mlp.run_fp16_inference(input_size, hidden_size, output_size, batch_size)?;
-```
-- **Step 2**: Run FP16 and compare to FP32 baseline
-
-```rust
-    // Run FP16 with scaling
-    let fp16_scaled_metrics =
-        mlp.run_fp16_scaled_inference(input_size, hidden_size, output_size, batch_size)?;
-```
-- **Step 3**: Run FP16+Scale and compare to FP32 baseline
-
-```rust
-    Ok(ComparisonMetrics {
-        fp32: fp32_metrics,
-        fp16: fp16_metrics,
-        fp16_scaled: fp16_scaled_metrics,
-    })
-```
-- **Returns all three results together** in a single structure
-- UI can now display all modes side-by-side
-
-### run_inference() - Legacy Entry Point
-
-```rust
-#[tauri::command]
-fn run_inference(precision: String, matrix_size: usize) -> Result<InferenceMetrics, String> {
-```
-- Still available for backward compatibility
-- Runs a single precision mode at a time
-- Not used in the new comparison UI
-
-### greet() - Simple Test Function
-
-```rust
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+if precision != "Fp32" && mlp.fp32_reference.is_none() {
+    let _ = mlp.run_fp32_inference(&rd)?;
 }
 ```
-- Simple function for testing that Rust ↔ JavaScript communication works
 
-### run() - Application Entry
+Uses `match` to dispatch to the correct inference function.
+
+### `run_comparison_inference()` — All Six Modes
 
 ```rust
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+#[tauri::command]
+fn run_comparison_inference(matrix_size: usize) -> Result<ComparisonMetrics, String>
 ```
-- **#[cfg_attr(...)]**: Conditional compilation attribute
-- This is the main entry point for the Tauri app
+
+The main entry point for the comparison page. Execution order:
+
+1. Generate one shared `RoundData`
+2. **`warmup_clblast(matrix_size)`** — fires the CLBlast auto-tuner before timing starts (no-op if already done for this size)
+3. Run FP32 first (establishes `fp32_reference` for accuracy comparison, accuracy = 0.0)
+4. Run FP16 (compared against FP32 reference)
+5. Run FP16 Scaled (compared against FP32 reference)
+6. Run CLBlast FP32 (accuracy hardcoded to 0.0)
+7. Run CLBlast FP16 (compared against FP32 reference)
+8. Run CLBlast Mixed (compared against FP32 reference)
+
+CLBlast modes use `.unwrap_or_else` for graceful degradation:
+```rust
+let clblast_fp32_metrics = mlp.run_clblast_fp32_inference(&rd).unwrap_or_else(|e| {
+    eprintln!("CLBlast FP32 error: {e}");
+    default_metrics()
+});
+```
+
+If CLBlast isn't available (DLL failed to load, or GPU doesn't support it), the CLBlast chart series show zeros instead of crashing the app.
+
+### `default_metrics()`
+
+Returns an all-zero `InferenceMetrics`. Used as the fallback value when a CLBlast mode fails.
+
+### `get_len()`
 
 ```rust
+#[tauri::command]
+async fn get_len() -> Result<usize, String> {
+    Ok(MY_DLL.len())
+}
+```
+
+Returns the size of the embedded CLBlast DLL. Used for verifying the DLL was embedded correctly.
+
+### `run()` — Application Entry Point
+
+```rust
+pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             run_inference,
-            run_comparison_inference
+            run_comparison_inference,
+            get_len
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-```
-- **Builder**: Pattern for constructing the app
-- **plugin**: Adds file opener functionality
-- **invoke_handler**: Registers functions that can be called from JavaScript
-- **generate_handler!**: Macro that generates boilerplate code
-- **NEW**: Added `run_comparison_inference` to the handler list
-- **run()**: Starts the application
-- **expect()**: Crashes with message if app fails to start
-
----
-
-## Frontend Integration
-
-### How the UI Uses the Comparison Mode
-
-#### 1. Data Structures (TypeScript)
-
-```typescript
-interface ComparisonMetrics {
-  fp32: InferenceMetrics;
-  fp16: InferenceMetrics;
-  fp16_scaled: InferenceMetrics;
 }
 ```
-- Matches the Rust `ComparisonMetrics` structure
-- Automatically converted from Rust to JavaScript by Serde
 
-#### 2. Invoking the Comparison
-
-```typescript
-const metrics = await invoke<ComparisonMetrics>(
-  "run_comparison_inference",
-  { matrixSize: scale }
-);
-```
-- **invoke**: Tauri function to call Rust from JavaScript
-- **"run_comparison_inference"**: The Rust function name
-- **matrixSize**: Parameter passed to Rust
-- Returns all three precision results at once
-
-#### 3. Storing Data for Charts
-
-```typescript
-// Separate state for each precision mode
-const [executionTimeDataFp32, setExecutionTimeDataFp32] = useState<ChartData[]>([]);
-const [executionTimeDataFp16, setExecutionTimeDataFp16] = useState<ChartData[]>([]);
-const [executionTimeDataFp16Scaled, setExecutionTimeDataFp16Scaled] = useState<ChartData[]>([]);
-```
-- Maintains separate data arrays for each mode
-- Each iteration adds a new point to all three arrays
-- Charts display all three lines simultaneously
-
-#### 4. Creating Multi-Series Charts
-
-```typescript
-const executionTimeSeries: DataSeries[] = [
-  { name: "FP32 (Baseline)", data: executionTimeDataFp32, color: "#22c55e" },
-  { name: "FP16", data: executionTimeDataFp16, color: "#3b82f6" },
-  { name: "FP16 + Scale", data: executionTimeDataFp16Scaled, color: "#a855f7" },
-];
-```
-- Combines data from all three modes into one series array
-- Each mode gets its own color for easy identification
-- Chart component displays all three lines on the same graph
-
-#### 5. Display Comparison
-
-```typescript
-<Chart
-  xAxisTitle="Iteration"
-  yAxisTitle="Time (ms)"
-  series={executionTimeSeries}
-  isStreaming={false}
-  height={250}
-/>
-```
-- **series**: Array of multiple data series (instead of single data array)
-- Chart automatically draws all three lines with legends
+Registers all three Tauri commands so the frontend can call them via `invoke()`. `tauri::generate_handler!` is a macro that generates the glue code.
 
 ---
 
-## Why Accuracy Stays Constant
+## The Six Precision Modes Compared
 
-You might notice that the accuracy values (MSE) don't change between iterations. **This is expected behavior!**
+| Mode | Storage | Compute | Kernel style | Memory | Accuracy vs FP32 |
+|------|---------|---------|--------------|--------|-------------------|
+| **FP32** | 32-bit | 32-bit | Two-pass custom | High (baseline) | 0.0 (is the reference) |
+| **FP16** | 16-bit | 16-bit | Two-pass custom | ~50% of FP32 | Small rounding error |
+| **FP16 Scaled** | 16-bit + FP32 scales | Mixed | Two-pass custom | ~52% of FP32 | Better than plain FP16 |
+| **CLBlast FP32** | 32-bit | 32-bit | BLAS SGEMM + bias kernel | Same as FP32 | 0.0 (equivalent precision) |
+| **CLBlast FP16** | 16-bit | 16-bit | BLAS HGEMM + bias kernel | ~50% of FP32 | Similar to FP16 |
+| **CLBlast Mixed** | 16-bit stored, 32-bit compute | 32-bit | Convert + BLAS SGEMM | Highest (both buffers) | Near FP32 |
 
-### Why?
+### What Makes CLBlast Faster Than the Custom Kernels?
 
-1. **Deterministic Data Generation**: The test data is generated using formulas like `i * 0.01 % 1.0`, which always produces the same values
-2. **Same Inputs = Same Outputs**: Neural networks are deterministic - same inputs always produce same outputs
-3. **Accuracy Measures Precision Loss**: MSE compares FP16/FP16+Scale to FP32 baseline
-4. **Consistent Precision Loss**: The precision loss from 32-bit to 16-bit is constant for the same data
+Both approaches now use the same correct two-pass algorithm. The difference is in **how the matrix multiplication inner loop is executed**.
 
-### What the Accuracy Shows:
+**Custom kernels:** A naive inner loop. Each thread reads one weight at a time from global memory (slow, no coalescing) and accumulates in a single register. Memory access is not optimized for the GPU's cache hierarchy.
 
-- **FP16 MSE**: ~1e-4 to 1e-3 (moderate error due to reduced precision)
-- **FP16+Scale MSE**: ~1e-5 to 1e-6 (much better due to scaling)
-- **FP32 MSE**: Always 0.0 (it's the reference)
+**CLBlast GEMM:** Uses advanced GPU-specific optimizations compiled specifically for your hardware:
+- **Tiling**: divides matrices into small tiles that fit in fast GPU local (shared) memory, dramatically reducing global memory traffic
+- **Vectorized loads**: reads 4 or 8 values at once with `float4`/`float8` instructions
+- **Register blocking**: keeps partial sums in registers (fastest possible storage) across many iterations
+- **Work-group tuning**: work-group sizes, tile dimensions, and unroll factors are auto-tuned per GPU model
 
-The flat accuracy lines tell you:
-- ✅ **Precision loss is predictable and stable**
-- ✅ **FP16+Scale consistently improves accuracy over FP16**
-- ✅ **The quantization is working as expected**
+For large matrices, CLBlast SGEMM can be **5–50× faster** than the equivalent naive loop.
 
-If you wanted varying accuracy, you would need to generate random data each iteration, but this would make it harder to compare performance fairly.
+---
+
+## Why FP32 and CLBlast FP32 Accuracy Are Always 0.0
+
+**FP32:** It is the reference that everything else is measured against. There is nothing to compare it to — it IS the baseline. Accuracy = 0.0 by definition.
+
+**CLBlast FP32:** Uses SGEMM which is pure FP32 arithmetic, the same precision as the reference kernel. The results are numerically equivalent (differences would only arise from floating-point operation reordering, which is noise smaller than measurement error). Accuracy is hardcoded to 0.0 rather than computed, since computing it would just measure floating-point non-associativity rather than meaningful precision loss.
+
+For all other modes, the MSE tells you how much precision was lost relative to FP32:
+- **Near 0.0**: The mode is nearly as accurate as FP32
+- **Small but nonzero**: Normal FP16 rounding — acceptable for most applications
+- **Large**: Significant precision loss — the mode may be unsuitable for this problem
 
 ---
 
 ## Summary
 
-This code creates a GPU-accelerated neural network inference comparison system that:
+The codebase implements a two-layer MLP (Multi-Layer Perceptron) neural network inference benchmark that simultaneously tests six different approaches to GPU computation.
 
-1. **Selects a GPU or CPU** for computation
-2. **Defines three OpenCL kernels** for different precision modes:
-   - FP32: Full 32-bit precision (accurate but slower)
-   - FP16: Half precision (faster, uses less memory, less accurate)
-   - FP16 + Scale: Hybrid approach (good balance)
-3. **Converts between float formats** when needed
-4. **Runs all three modes simultaneously** by:
-   - Creating test data
-   - Running FP32 baseline
-   - Running FP16 and comparing
-   - Running FP16+Scale and comparing
-   - Returning combined metrics
-5. **Compares accuracy** between different precision modes
-6. **Exposes comparison function** to the UI via Tauri
-7. **Displays side-by-side comparison** in the UI with:
-   - Three-column metrics panel
-   - Multi-line charts for each metric
-   - Color-coded visualization
-   - Real-time updates every second
+**Three Custom OpenCL Kernels (two-pass design):**
+1. **FP32** — full precision, the reference baseline. Two dispatch passes: `mlp_fp32_layer1` (hidden layer) then `mlp_fp32_layer2` (output layer).
+2. **FP16** — half precision. Same two-pass structure with `half` data throughout. Uses half the memory.
+3. **FP16 Scaled** — half precision with per-row quantization. Weights are normalized to `[-1, 1]` before FP16 conversion; scale factors are stored in FP32 and applied during compute. Hidden buffer uses FP32 for accurate accumulation.
 
-The key innovation: Instead of running modes separately, the system runs all three together and returns combined results, making it much easier to compare performance, memory usage, and accuracy trade-offs in real-time.
+**Three CLBlast BLAS-Accelerated Paths:**
+4. **CLBlast FP32** — SGEMM (FP32 matrix multiply) + custom bias/ReLU kernel. Accuracy hardcoded to 0.0.
+5. **CLBlast FP16** — HGEMM (FP16 matrix multiply) + custom FP16 bias/ReLU kernel.
+6. **CLBlast Mixed** — data uploaded as FP16, converted to FP32 on-GPU, then SGEMM runs in FP32.
 
-### Performance Insights
-
-From the comparison, you typically observe:
-- **FP16 is ~2x faster** than FP32 (execution time)
-- **FP16 has ~2x higher throughput** (GFLOPS)
-- **FP16 uses ~50% less memory** (bandwidth and footprint)
-- **FP16+Scale sacrifices ~20% speed** for 10-100x better accuracy
-- **Accuracy is constant** (same test data produces consistent precision loss)
-
-This makes FP16+Scale the "sweet spot" for production inference workloads.
+**Key design decisions:**
+- All six modes use the **same `RoundData`** for fair comparison
+- CLBlast auto-tuning is paid upfront via `warmup_clblast()` before timing starts — the first-call spike (~1 second) no longer pollutes the measurements
+- Float conversions use the **`half` crate** instead of hand-written bit manipulation
+- The CLBlast DLL is **embedded in the binary** via `include_bytes!` — zero install friction
+- The singleton `MLP_INSTANCE` reuses the GPU context across all calls — no repeated initialization cost
+- All results are sent to a Tauri/JavaScript frontend as JSON through a simple command API

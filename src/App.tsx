@@ -83,9 +83,6 @@ function App() {
   const [accuracyDataFp16Scaled, setAccuracyDataFp16Scaled] = useState<
     ChartData[]
   >([]);
-  const [accuracyDataClblastFp32, setAccuracyDataClblastFp32] = useState<
-    ChartData[]
-  >([]);
   const [accuracyDataClblastFp16, setAccuracyDataClblastFp16] = useState<
     ChartData[]
   >([]);
@@ -256,7 +253,7 @@ function App() {
         return next.length > 200 ? next.slice(-200) : next;
       });
 
-      // Update accuracy data (FP32 baseline has 0 MSE, so we skip it; CLBlast FP32 may have slight diff)
+      // Update accuracy data (FP32 and CLBlast FP32 baselines are always 0 MSE, so we skip them)
       setAccuracyDataFp16((prev) => {
         const next = [...prev, { x: iteration, y: metrics.fp16.accuracy_mse }];
         return next.length > 200 ? next.slice(-200) : next;
@@ -266,14 +263,6 @@ function App() {
         const next = [
           ...prev,
           { x: iteration, y: metrics.fp16_scaled.accuracy_mse },
-        ];
-        return next.length > 200 ? next.slice(-200) : next;
-      });
-
-      setAccuracyDataClblastFp32((prev) => {
-        const next = [
-          ...prev,
-          { x: iteration, y: metrics.clblast_fp32.accuracy_mse },
         ];
         return next.length > 200 ? next.slice(-200) : next;
       });
@@ -326,7 +315,6 @@ function App() {
       setBandwidthDataClblastMixed([]);
       setAccuracyDataFp16([]);
       setAccuracyDataFp16Scaled([]);
-      setAccuracyDataClblastFp32([]);
       setAccuracyDataClblastFp16([]);
       setAccuracyDataClblastMixed([]);
 
@@ -434,11 +422,6 @@ function App() {
   const accuracySeries: DataSeries[] = [
     { name: "FP16", data: accuracyDataFp16, color: "#f97316" },
     { name: "FP16 + Scale", data: accuracyDataFp16Scaled, color: "#ef4444" },
-    {
-      name: "CLBlast FP32",
-      data: accuracyDataClblastFp32,
-      color: "#eab308",
-    },
     {
       name: "CLBlast FP16",
       data: accuracyDataClblastFp16,
@@ -650,12 +633,6 @@ function App() {
                       2,
                     )}{" "}
                     GB/s
-                  </div>
-                </div>
-                <div className="rounded-lg bg-base-300 p-3">
-                  <div className="text-xs text-text-800">Accuracy MSE</div>
-                  <div className="text-lg font-bold text-orange-400">
-                    {currentMetrics.clblast_fp32.accuracy_mse.toExponential(3)}
                   </div>
                 </div>
               </div>

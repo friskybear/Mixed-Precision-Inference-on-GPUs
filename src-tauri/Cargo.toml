@@ -33,6 +33,7 @@ opencl3 = { version = "0.12.1", features = [
 libc = "0.2.180"
 rand = "0.9.2"
 libloading = "0.9"
+half = "2"
 
 [profile.release]
 opt-level = 3
